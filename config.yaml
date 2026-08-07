@@ -5,3 +5,19 @@ weights:
   beta: 2.0    # latency weight
   gamma: 1.5   # saturation weight
 temperature: 0.5
+server:
+  host: "0.0.0.0"
+  port: 8000
+  workers:
+    - node_id: "mock_node_0"
+      type: "mock"
+      base_delay_sec: 0.05
+      load_factor: 0.5
+    - node_id: "mock_node_1"
+      type: "mock"
+      base_delay_sec: 0.05
+      load_factor: 0.5
+    - node_id: "mock_node_2"
+      type: "mock"
+      base_delay_sec: 0.10
+      load_factor: 0.5

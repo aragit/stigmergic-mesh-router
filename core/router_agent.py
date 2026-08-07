@@ -160,3 +160,16 @@ class StigmergicRouterAgent:
         )
         result["routed_to"] = result["node_id"]
         return result
+
+    async def route_and_execute(
+        self,
+        prompt: str,
+        max_tokens: int = 128,
+    ) -> Dict[str, Any]:
+        """Sample a worker, execute inference, and deposit a trace.
+
+        This is an alias for :meth:`route` providing a more descriptive
+        name for callers that want to emphasise the full execute-then-record
+        lifecycle.
+        """
+        return await self.route(prompt, max_tokens)

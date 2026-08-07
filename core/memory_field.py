@@ -32,6 +32,7 @@ class PheromoneMemoryField:
         node_ids: List[str],
         initial_state: Optional[np.ndarray] = None,
         saturation_scale: float = 0.1,
+        decay_success: bool = True,
     ) -> None:
         """Initialise the field with *node_ids* and an optional initial state.
 
@@ -49,12 +50,22 @@ class PheromoneMemoryField:
             a residual load of 1 to S = 0.1, which is comparable to
             typical latency values (~0.05-0.3 s) and prevents S from
             dominating the attraction score.
+        decay_success
+            When *True* (default) the V column (success) is also scaled
+            by ``(1 - decay_rate)`` during evaporation, matching the
+            classic stigmergic model.  When *False*, V is treated as a
+            persistent quality metric that does **not** evaporate; only
+            L (latency) and S (saturation) fade.  Disabling V decay is
+            useful in scenarios where a node's historical success rate
+            should survive transient failures so that it can
+            re-attract traffic once latency observations recover.
         """
         self.node_ids: List[str] = list(node_ids)
         self._node_index: Dict[str, int] = {
             nid: i for i, nid in enumerate(self.node_ids)
         }
         self.saturation_scale: float = saturation_scale
+        self.decay_success: bool = decay_success
         n_nodes = len(self.node_ids)
 
         if initial_state is not None:
@@ -143,9 +154,16 @@ class PheromoneMemoryField:
     async def apply_evaporation(self, decay_rate: float) -> None:
         """Apply multiplicative evaporation to every trace.
 
-        All pheromone values are scaled by ``(1 - decay_rate)``, causing
-        stale traces to fade over time so that the field reflects recent
-        performance rather than ancient history.
+        Columns L (latency) and S (saturation) are always scaled by
+        ``(1 - decay_rate)``, causing stale observations to fade so that
+        the field reflects recent performance.
+
+        When ``decay_success`` is *True* (the default), the V (success)
+        column is also scaled, following the classic stigmergic model
+        where all pheromone traces evaporate uniformly.  When *False*,
+        V is left untouched — the node's success quality persists even
+        as individual latency observations evaporate, allowing a
+        recovering node to re-attract traffic sooner.
 
         Parameters
         ----------
@@ -156,4 +174,7 @@ class PheromoneMemoryField:
         if not 0.0 <= decay_rate < 1.0:
             raise ValueError("decay_rate must be in [0, 1)")
         async with self._lock:
-            self._state *= (1.0 - decay_rate)
+            if self.decay_success:
+                self._state[:, 0] *= (1.0 - decay_rate)
+            self._state[:, 1] *= (1.0 - decay_rate)
+            self._state[:, 2] *= (1.0 - decay_rate)
