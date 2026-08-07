@@ -1,11 +1,9 @@
-version: "3.8"
-
 services:
   redis:
     image: redis:7-alpine
     container_name: stigmergic-redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
     restart: unless-stopped
 
   router-1:
@@ -14,7 +12,7 @@ services:
     depends_on:
       - redis
     ports:
-      - "8000:8000"
+      - "18000:8000"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./core:/app/core
@@ -31,7 +29,7 @@ services:
     depends_on:
       - redis
     ports:
-      - "8001:8000"
+      - "18001:8000"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./core:/app/core
@@ -42,17 +40,21 @@ services:
     command: uvicorn api.server:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
 
-  worker-ollama:
-    image: ollama/ollama:latest
-    container_name: stigmergic-ollama
-    ports:
-      - "11434:11434"
-    restart: unless-stopped
-
-  worker-vllm:
-    image: vllmai/vllm:latest
-    container_name: stigmergic-vllm
-    ports:
-      - "8080:80"
-    restart: unless-stopped
-    command: --model facebook/opt-125m
+  # Optional worker adapters — uncomment and configure as needed.
+  # The API server falls back to mock workers from config.yaml if these
+  # are not running.
+  #
+  # worker-ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: stigmergic-ollama
+  #   ports:
+  #     - "11434:11434"
+  #   restart: unless-stopped
+  #
+  # worker-vllm:
+  #   image: vllm/vllm:latest
+  #   container_name: stigmergic-vllm
+  #   ports:
+  #     - "8080:80"
+  #   restart: unless-stopped
+  #   command: --model facebook/opt-125m

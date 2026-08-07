@@ -8,6 +8,7 @@ feedback rather than static round-robin or least-connections.
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -186,6 +187,15 @@ async def lifespan(app: FastAPI):
     """Initialise mesh state on startup, tear down on shutdown."""
     with open(CONFIG_PATH, "r") as f:
         _state.config = yaml.safe_load(f)
+
+    # Allow environment variable overrides for container deployments
+    env_backend = os.environ.get("STIGMERGIC_STORAGE_BACKEND")
+    if env_backend:
+        _state.config["storage_backend"] = env_backend
+    env_host = os.environ.get("STIGMERGIC_REDIS_HOST")
+    if env_host:
+        redis_cfg = _state.config.setdefault("redis", {})
+        redis_cfg["host"] = env_host
 
     worker_specs = _state.config.get("server", {}).get("workers", [])
     if not worker_specs:
