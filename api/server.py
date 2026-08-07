@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 import uvicorn
 import yaml
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from prometheus_client import make_asgi_app
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
@@ -27,6 +27,7 @@ from api.metrics import (
     stigmergic_request_duration_seconds,
     update_prometheus_metrics,
 )
+from api.streaming import stream_chat_completion, stream_completion
 from core.decay_engine import start_decay_engine
 from core.memory_field import (
     BasePheromoneMemoryField,
@@ -303,8 +304,22 @@ async def completions(request: CompletionRequest):
     if not _state.ready:
         raise HTTPException(status_code=503, detail="Router not initialised")
 
-    start = time.monotonic()
     cap_context = analyze_prompt(request.prompt)
+
+    if request.stream:
+        return StreamingResponse(
+            media_type="text/event-stream",
+            content=stream_completion(
+                router=_state.router,
+                memory_field=_state.memory_field,
+                prompt=request.prompt,
+                max_tokens=request.max_tokens,
+                capability_context=cap_context,
+                capability_match=0.5,
+            ),
+        )
+
+    start = time.monotonic()
     result = await _state.router.route_and_execute(
         prompt=request.prompt,
         max_tokens=request.max_tokens,
@@ -357,9 +372,23 @@ async def chat_completions(request: ChatCompletionRequest):
     if not _state.ready:
         raise HTTPException(status_code=503, detail="Router not initialised")
 
-    start = time.monotonic()
     prompt = _messages_to_prompt(request.messages)
     cap_context = analyze_prompt(prompt)
+
+    if request.stream:
+        return StreamingResponse(
+            media_type="text/event-stream",
+            content=stream_chat_completion(
+                router=_state.router,
+                memory_field=_state.memory_field,
+                prompt=prompt,
+                max_tokens=request.max_tokens,
+                capability_context=cap_context,
+                capability_match=0.5,
+            ),
+        )
+
+    start = time.monotonic()
 
     result = await _state.router.route_and_execute(
         prompt=prompt,

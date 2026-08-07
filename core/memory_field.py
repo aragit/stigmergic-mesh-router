@@ -215,6 +215,35 @@ class InMemoryPheromoneMemoryField(BasePheromoneMemoryField):
             if self.decay_capability:
                 self._state[:, 3] *= (1.0 - decay_rate)
 
+    async def add_node(
+        self, node_id: str, capability_tags: Optional[List[str]] = None
+    ) -> None:
+        """Dynamically append a new node to the state matrix.
+
+        The new row is initialised to baseline ``[V=1.0, L=0.1,
+        S=0.0, C=1.0]`` (or the provided ``initial_state`` baseline).
+        """
+        async with self._lock:
+            if node_id in self._node_index:
+                return
+            idx = len(self.node_ids)
+            self._node_index[node_id] = idx
+            self.node_ids.append(node_id)
+            row = self._DEFAULT_STATE.copy()
+            self._state = np.vstack([self._state, row[np.newaxis, :]])
+
+    async def remove_node(self, node_id: str) -> None:
+        """Remove a node from the in-memory state matrix."""
+        async with self._lock:
+            if node_id not in self._node_index:
+                return
+            idx = self._node_index.pop(node_id)
+            self.node_ids.pop(idx)
+            self._node_index = {
+                nid: i for i, nid in enumerate(self.node_ids)
+            }
+            self._state = np.delete(self._state, idx, axis=0)
+
 
 class RedisPheromoneMemoryField(BasePheromoneMemoryField):
     """Distributed pheromone memory field backed by Redis.
@@ -466,6 +495,34 @@ class RedisPheromoneMemoryField(BasePheromoneMemoryField):
                 updates["C"] = float(raw.get(b"C", 1.0) or 1.0) * factor
             pipe2.hset(self._key(nid), mapping=updates)
         await pipe2.execute()
+
+    async def add_node(
+        self, node_id: str, capability_tags: Optional[List[str]] = None
+    ) -> None:
+        """Dynamically add a new node's Redis hash to the field."""
+        await self._ensure_initialized()
+        if node_id in self._node_index:
+            return
+        idx = len(self.node_ids)
+        self._node_index[node_id] = idx
+        self.node_ids.append(node_id)
+        v, l, s, c = self._DEFAULT_STATE
+        await self._redis.hset(
+            self._key(node_id),
+            mapping={"V": v, "L": l, "S": s, "C": c, "ts": time.time()},
+        )
+
+    async def remove_node(self, node_id: str) -> None:
+        """Remove a node's Redis hash and internal tracking."""
+        if node_id not in self._node_index:
+            return
+        await self._ensure_initialized()
+        await self._redis.delete(self._key(node_id))
+        idx = self._node_index.pop(node_id)
+        self.node_ids.pop(idx)
+        self._node_index = {
+            nid: i for i, nid in enumerate(self.node_ids)
+        }
 
     async def close(self) -> None:
         """Close the Redis connection pool."""
