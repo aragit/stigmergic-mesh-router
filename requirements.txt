@@ -5,5 +5,8 @@ pydantic
 fastapi
 uvicorn
 rich
+redis
+redis[hiredis]
 pytest
 pytest-asyncio
+fakeredis

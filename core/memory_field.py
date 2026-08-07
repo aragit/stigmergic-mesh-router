@@ -1,44 +1,104 @@
 """Pheromone memory field for stigmergic routing.
 
-Maintains a state matrix of shape ``(N_nodes, 4)`` where each row encodes the
-pheromone traces for a single worker node:
+This module provides a polymorphic memory field with two backends:
+
+* :class:`InMemoryPheromoneMemoryField` — single-process, lock-guarded
+  NumPy array (default for local execution and testing).
+* :class:`RedisPheromoneMemoryField` — distributed backend backed by Redis,
+  using atomic Lua scripts to guarantee consistency when multiple router
+  replicas deposit traces concurrently.
+
+Both backends implement the same :class:`BasePheromoneMemoryField` interface
+and are selected at startup via ``config.yaml``'s ``storage_backend`` key.
+
+State matrix layout — ``(N_nodes, 4)`` where each row encodes:
 
 Column 0 — V (Success): exponentially-weighted success signal in [0, 1].
     Higher values indicate a node with a strong record of successful
-    inferences and are positively correlated with selection probability.
+    inferences.
 
-Column 1 — L (Latency): exponentially-weighted moving average of observed
-    latency in seconds. Lower values are better; high latency penalises
-    the node's attraction score.
+Column 1 — L (Latency): EWMA of observed latency in seconds.
+    Lower values are better; high latency penalises the score.
 
-Column 2 — S (Saturation): normalized residual load on the node at the
-    time a trace is deposited. Higher saturation discourages further
-    traffic (load balancing via negative feedback). Values are scaled
-    by *saturation_scale* to keep them comparable with latency in the
-    score formula.
+Column 2 — S (Saturation): normalized residual load on the node.
+    Higher saturation discourages further traffic.
 
-Column 3 — C (Capability Fit): exponentially-weighted record of how well
-    the node's declared capability tags match the requests routed to it.
-    A value near 1.0 means the node consistently handles requests that
-    match its declared capabilities; lower values indicate a mismatch.
-    This trace is used in the extended attraction score:
+Column 3 — C (Capability Fit): EWMA of how well the node's declared
+    capability tags matched the requests routed to it (∈ [0, 1]).
 
-        Score = (alpha * V + delta * C + eps) / (beta * L + gamma * S + eps)
+Extended attraction score::
+
+    Score_i = (alpha * V_i + delta * C_i + eps)
+              / (beta * L_i + gamma * S_i + eps)
 """
 
 import asyncio
-from typing import Dict, List, Optional
+import json
+import time
+from abc import ABC, abstractmethod
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+try:
+    import redis.asyncio as redis
+except ImportError:
+    redis = None
 
-class PheromoneMemoryField:
-    """Async-safe 2D pheromone memory field for stigmergic routing.
 
-    Tracks four pheromone traces per node: **V** (success), **L** (latency),
-    **S** (saturation), and **C** (capability fit).  All updates are guarded
-    by an :class:`asyncio.Lock` to ensure correctness under concurrent
-    access from multiple router agents or background tasks.
+class BasePheromoneMemoryField(ABC):
+    """Abstract interface for pheromone memory fields.
+
+    Defines the minimal contract that the :class:`StigmergicRouterAgent`
+    and :func:`start_decay_engine` rely on:
+
+    * :meth:`get_state_vector` — read the full state matrix
+    * :meth:`deposit_trace` — write EWMA traces for a single node
+    * :meth:`apply_evaporation` — bulk multiplicative decay
+    * :meth:`node_ids` — the ordered list of tracked nodes
+    """
+
+    @property
+    @abstractmethod
+    def n_nodes(self) -> int:
+        """Number of nodes tracked by this field."""
+        ...
+
+    @abstractmethod
+    def _index_of(self, node_id: str) -> int:
+        """Return the row index for *node_id*."""
+        ...
+
+    @abstractmethod
+    async def get_state_vector(self) -> np.ndarray:
+        """Return a copy of the full state matrix ``(N_nodes, 4)``."""
+        ...
+
+    @abstractmethod
+    async def deposit_trace(
+        self,
+        node_id: str,
+        latency_sec: float,
+        tokens: int,
+        success: bool,
+        active_load: int,
+        capability_match: float = 0.5,
+    ) -> None:
+        """Update pheromone traces for *node_id* after a completed inference."""
+        ...
+
+    @abstractmethod
+    async def apply_evaporation(self, decay_rate: float) -> None:
+        """Apply multiplicative evaporation to every trace."""
+        ...
+
+
+class InMemoryPheromoneMemoryField(BasePheromoneMemoryField):
+    """Lock-guarded in-memory pheromone field backed by a NumPy array.
+
+    Suitable for single-process execution, testing, and local development.
+    All operations are guarded by an :class:`asyncio.Lock` to prevent
+    race conditions under concurrent coroutine access.
     """
 
     _DEFAULT_STATE = np.array([1.0, 0.1, 0.0, 1.0], dtype=np.float64)
@@ -51,7 +111,7 @@ class PheromoneMemoryField:
         decay_success: bool = True,
         decay_capability: bool = True,
     ) -> None:
-        """Initialise the field with *node_ids* and an optional initial state.
+        """Initialise the field.
 
         Parameters
         ----------
@@ -59,23 +119,14 @@ class PheromoneMemoryField:
             Ordered list of worker node identifiers.
         initial_state
             Optional ``(N_nodes, 4)`` array to seed the field.  When
-            *None* the field starts from the baseline ``[V=1.0, L=0.1,
-            S=0.0, C=1.0]`` so that all nodes begin with equal attraction
-            probability.
+            *None* the field starts from baseline ``[V=1.0, L=0.1,
+            S=0.0, C=1.0]``.
         saturation_scale
-            Scaling factor applied to the *active_load* parameter when
-            writing to the S column.  A value of 0.1 (the default) maps
-            a residual load of 1 to S = 0.1, which is comparable to
-            typical latency values (~0.05-0.3 s) and prevents S from
-            dominating the attraction score.
+            Scaling factor for the *active_load* → S column.
         decay_success
-            When *True* (default) the V column (success) is also scaled
-            by ``(1 - decay_rate)`` during evaporation, matching the
-            classic stigmergic model.  When *False*, V is treated as a
-            persistent quality metric that does **not** evaporate.
+            When *True* (default), the V column decays during evaporation.
         decay_capability
-            When *True* (default) the C column (capability fit) also
-            decays.  Set to *False* to keep capability scores persistent.
+            When *True* (default), the C column decays during evaporation.
         """
         self.node_ids: List[str] = list(node_ids)
         self._node_index: Dict[str, int] = {
@@ -104,11 +155,9 @@ class PheromoneMemoryField:
 
     @property
     def n_nodes(self) -> int:
-        """Number of nodes tracked by this field."""
         return len(self.node_ids)
 
     def _index_of(self, node_id: str) -> int:
-        """Return the row index for *node_id*."""
         if node_id not in self._node_index:
             raise KeyError(f"Unknown node_id: {node_id!r}")
         return self._node_index[node_id]
@@ -127,79 +176,34 @@ class PheromoneMemoryField:
         active_load: int,
         capability_match: float = 0.5,
     ) -> None:
-        """Update pheromone traces for *node_id* after a completed inference.
+        """Update pheromone traces for *node_id* via EWMA.
 
-        Updates applied to the state matrix row for *node_id*:
-
-        * **V (Success)** — EWMA update toward the binary success indicator.
-          ``V_new = 0.5 * success + 0.5 * V_old`` keeping V ∈ [0, 1].
-        * **L (Latency)** — EWMA update toward the observed latency.
-          ``L_new = 0.5 * latency + 0.5 * L_old``.
-        * **S (Saturation)** — scaled assignment from *active_load*.
-          ``S = active_load * saturation_scale``.
-        * **C (Capability Fit)** — EWMA update toward *capability_match*
-          (a value in [0, 1] indicating how well the node's declared
-          capability tags matched the request).
-
-        Parameters
-        ----------
-        node_id
-            Identifier of the node that completed the request.
-        latency_sec
-            Wall-clock latency of the inference in seconds.
-        tokens
-            Number of tokens generated (accepted for future weighting;
-            currently not written to the 4-column state matrix).
-        success
-            Whether the inference completed successfully.
-        active_load
-            Residual concurrent load on the node after this request
-            completed (proxy for saturation).
-        capability_match
-            How well the node's capability tags matched the request,
-            in [0, 1].  Default 0.5 is neutral.
+        V, L, and C use EWMA with alpha=0.5.  S is set directly from
+        active_load scaled by *saturation_scale*.
         """
         async with self._lock:
             idx = self._index_of(node_id)
-
             success_val = 1.0 if success else 0.0
-            alpha = 0.5  # EWMA smoothing factor
+            alpha = 0.5
 
-            # V: success signal EWMA
             self._state[idx, 0] = (
                 alpha * success_val + (1.0 - alpha) * self._state[idx, 0]
             )
-
-            # L: latency EWMA
             self._state[idx, 1] = (
                 alpha * latency_sec + (1.0 - alpha) * self._state[idx, 1]
             )
-
-            # S: normalized saturation — scaled to be comparable with L
             self._state[idx, 2] = float(active_load) * self.saturation_scale
-
-            # C: capability fit EWMA
             cap = max(0.0, min(1.0, float(capability_match)))
             self._state[idx, 3] = (
                 alpha * cap + (1.0 - alpha) * self._state[idx, 3]
             )
 
     async def apply_evaporation(self, decay_rate: float) -> None:
-        """Apply multiplicative evaporation to every trace.
+        """Apply multiplicative evaporation to all traces.
 
-        Columns L (latency), S (saturation), and — when
-        ``decay_capability`` is *True* — C (capability fit) are always
-        scaled by ``(1 - decay_rate)``, causing stale observations to fade.
-
-        When ``decay_success`` is *True* (the default), the V (success)
-        column is also scaled, following the classic stigmergic model.
-        When *False*, V is left untouched.
-
-        Parameters
-        ----------
-        decay_rate
-            Fraction of the current value to evaporate per step.
-            Must satisfy ``0 <= decay_rate < 1``.
+        V decays only if ``decay_success`` is *True*.
+        C decays only if ``decay_capability`` is *True*.
+        L and S always decay.
         """
         if not 0.0 <= decay_rate < 1.0:
             raise ValueError("decay_rate must be in [0, 1)")
@@ -210,3 +214,321 @@ class PheromoneMemoryField:
             self._state[:, 2] *= (1.0 - decay_rate)
             if self.decay_capability:
                 self._state[:, 3] *= (1.0 - decay_rate)
+
+
+class RedisPheromoneMemoryField(BasePheromoneMemoryField):
+    """Distributed pheromone memory field backed by Redis.
+
+    Each node's four traces are stored as a Redis hash at key
+    ``stigmergic:node:{node_id}`` with fields ``V``, ``L``, ``S``,
+    ``C``, and ``ts`` (last-update timestamp for lazy decay).
+
+    Trace deposition is performed via an atomic Lua script that:
+    1. Reads the current state and timestamp.
+    2. Computes elapsed-time decay factor ``(1 - decay_rate) ^ steps``.
+    3. Applies EWMA updates for V, L, and C.
+    4. Sets S from the incoming active_load.
+    5. Writes back atomically.
+
+    This guarantees correctness even when multiple router replicas
+    deposit traces for the same node concurrently.
+    """
+
+    _DEFAULT_STATE = [1.0, 0.1, 0.0, 1.0]
+
+    # Lua script for atomic trace deposit with lazy decay.
+    # Keys:   KEYS[1] = node hash key
+    # ARGV:   ARGV[1] = decay_rate (float)
+    #         ARGV[2] = decay_success flag (0 or 1)
+    #         ARGV[3] = decay_interval_sec (float)
+    #         ARGV[4] = decay_capability flag (0 or 1)
+    #         ARGV[5] = success_val (0.0 or 1.0)
+    #         ARGV[6] = now (timestamp)
+    #         ARGV[7] = latency_sec (float)
+    #         ARGV[8] = saturated_load (float)
+    #         ARGV[9] = capability_match (0..1)
+    _DEPOSIT_SCRIPT = """
+    local key = KEYS[1]
+    local fields = redis.call('HMGET', key, 'V', 'L', 'S', 'C', 'ts')
+    local V = tonumber(fields[1]) or 1.0
+    local L = tonumber(fields[2]) or 0.1
+    local S_val = tonumber(fields[3]) or 0.0
+    local C = tonumber(fields[4]) or 1.0
+    local ts = tonumber(fields[5]) or 0.0
+
+    local now = tonumber(ARGV[6])
+    local elapsed = now - ts
+    local steps = elapsed / tonumber(ARGV[3])
+    if steps < 0 then steps = 0 end
+    local decay_rate = tonumber(ARGV[1])
+    local factor = math.pow(1.0 - decay_rate, steps)
+
+    local decay_v = tonumber(ARGV[2]) == 1
+    local decay_c = tonumber(ARGV[4]) == 1
+
+    if decay_v then V = V * factor end
+    L = L * factor
+    S_val = S_val * factor
+    if decay_c then C = C * factor end
+
+    local alpha = 0.5
+    local success_val = tonumber(ARGV[5])
+    local latency = tonumber(ARGV[7])
+    local saturated_load = tonumber(ARGV[8])
+    local cap_match = tonumber(ARGV[9])
+
+    -- Clamp capability match to [0, 1]
+    if cap_match < 0 then cap_match = 0 end
+    if cap_match > 1 then cap_match = 1 end
+
+    V = alpha * success_val + (1.0 - alpha) * V
+    L = alpha * latency + (1.0 - alpha) * L
+    S_val = saturated_load
+    C = alpha * cap_match + (1.0 - alpha) * C
+
+    redis.call('HMSET', key,
+        'V', V, 'L', L, 'S', S_val, 'C', C, 'ts', now)
+    return {V, L, S_val, C, now}
+    """
+
+    def __init__(
+        self,
+        node_ids: List[str],
+        redis_host: str = "localhost",
+        redis_port: int = 6379,
+        redis_db: int = 0,
+        redis_password: Optional[str] = None,
+        saturation_scale: float = 0.1,
+        decay_success: bool = True,
+        decay_capability: bool = True,
+        decay_rate: float = 0.05,
+        decay_interval_sec: float = 0.5,
+        redis_client: Optional[Any] = None,
+    ) -> None:
+        if redis is None and redis_client is None:
+            raise ImportError(
+                "redis-py is not installed. Run: pip install redis"
+            )
+
+        self.node_ids: List[str] = list(node_ids)
+        self._node_index: Dict[str, int] = {
+            nid: i for i, nid in enumerate(self.node_ids)
+        }
+        self.saturation_scale: float = saturation_scale
+        self.decay_success: bool = decay_success
+        self.decay_capability: bool = decay_capability
+        self._decay_rate: float = decay_rate
+        self._decay_interval_sec: float = decay_interval_sec
+
+        if redis_client is not None:
+            self._redis = redis_client
+        else:
+            self._redis = redis.Redis(
+                host=redis_host,
+                port=redis_port,
+                db=redis_db,
+                password=redis_password,
+                decode_responses=False,
+            )
+        self._prefix = "stigmergic:node:"
+        self._deposit_sha: Optional[str] = None
+        self._init_lock = asyncio.Lock()
+        self._initialized = False
+
+    @property
+    def n_nodes(self) -> int:
+        return len(self.node_ids)
+
+    def _index_of(self, node_id: str) -> int:
+        if node_id not in self._node_index:
+            raise KeyError(f"Unknown node_id: {node_id!r}")
+        return self._node_index[node_id]
+
+    def _key(self, node_id: str) -> str:
+        return f"{self._prefix}{node_id}"
+
+    async def _ensure_initialized(self) -> None:
+        """Initialize Redis keys and load the Lua script (idempotent)."""
+        if self._initialized:
+            return
+        async with self._init_lock:
+            if self._initialized:
+                return
+
+            pipe = self._redis.pipeline()
+            for nid in self.node_ids:
+                key = self._key(nid)
+                v, l, s, c = self._DEFAULT_STATE
+                pipe.hset(key, mapping={
+                    "V": v, "L": l, "S": s, "C": c,
+                    "ts": time.time(),
+                })
+            await pipe.execute()
+
+            self._deposit_sha = await self._redis.script_load(
+                self._DEPOSIT_SCRIPT
+            )
+            self._initialized = True
+
+    async def get_state_vector(self) -> np.ndarray:
+        """Read all node states from Redis and apply lazy decay.
+
+        Returns a ``(N_nodes, 4)`` NumPy array with columns [V, L, S, C].
+        """
+        await self._ensure_initialized()
+
+        now = time.time()
+        pipe = self._redis.pipeline()
+        for nid in self.node_ids:
+            pipe.hgetall(self._key(nid))
+        raw_results = await pipe.execute()
+
+        state = np.zeros((self.n_nodes, 4), dtype=np.float64)
+
+        for i, (nid, raw) in enumerate(zip(self.node_ids, raw_results)):
+            v = float(raw.get(b"V", 1.0) or 1.0)
+            l = float(raw.get(b"L", 0.1) or 0.1)
+            s = float(raw.get(b"S", 0.0) or 0.0)
+            c = float(raw.get(b"C", 1.0) or 1.0)
+            ts = float(raw.get(b"ts", now) or now)
+
+            elapsed = now - ts
+            steps = elapsed / self._decay_interval_sec
+            if steps > 0:
+                factor = (1.0 - self._decay_rate) ** steps
+                if self.decay_success:
+                    v *= factor
+                l *= factor
+                s *= factor
+                if self.decay_capability:
+                    c *= factor
+
+            state[i] = [v, l, s, c]
+
+        return state
+
+    async def deposit_trace(
+        self,
+        node_id: str,
+        latency_sec: float,
+        tokens: int,
+        success: bool,
+        active_load: int,
+        capability_match: float = 0.5,
+    ) -> None:
+        """Atomically deposit traces for *node_id* via Lua script.
+
+        The script applies lazy decay based on elapsed time since the
+        last update, then applies EWMA updates for V, L, and C.
+        """
+        await self._ensure_initialized()
+
+        idx = self._index_of(node_id)
+        success_val = 1.0 if success else 0.0
+        saturated_load = float(active_load) * self.saturation_scale
+        cap = max(0.0, min(1.0, float(capability_match)))
+        now = time.time()
+
+        await self._redis.evalsha(
+            self._deposit_sha,
+            1,  # 1 key
+            self._key(node_id),
+            self._decay_rate,
+            1 if self.decay_success else 0,
+            self._decay_interval_sec,
+            1 if self.decay_capability else 0,
+            success_val,
+            now,
+            latency_sec,
+            saturated_load,
+            cap,
+        )
+
+    async def apply_evaporation(self, decay_rate: float) -> None:
+        """Apply bulk multiplicative evaporation to all nodes via pipeline.
+
+        V decays only if ``decay_success`` is *True*.
+        C decays only if ``decay_capability`` is *True*.
+        """
+        if not 0.0 <= decay_rate < 1.0:
+            raise ValueError("decay_rate must be in [0, 1)")
+        await self._ensure_initialized()
+
+        factor = 1.0 - decay_rate
+
+        pipe = self._redis.pipeline()
+        for nid in self.node_ids:
+            pipe.hgetall(self._key(nid))
+        raw_results = await pipe.execute()
+
+        pipe2 = self._redis.pipeline()
+        for nid, raw in zip(self.node_ids, raw_results):
+            updates: Dict[str, Any] = {}
+            if self.decay_success:
+                updates["V"] = float(raw.get(b"V", 1.0) or 1.0) * factor
+            updates["L"] = float(raw.get(b"L", 0.1) or 0.1) * factor
+            updates["S"] = float(raw.get(b"S", 0.0) or 0.0) * factor
+            if self.decay_capability:
+                updates["C"] = float(raw.get(b"C", 1.0) or 1.0) * factor
+            pipe2.hset(self._key(nid), mapping=updates)
+        await pipe2.execute()
+
+    async def close(self) -> None:
+        """Close the Redis connection pool."""
+        if self._redis:
+            await self._redis.aclose()
+
+
+# ── Backward-compatible alias ──────────────────────────────────────────
+
+PheromoneMemoryField = InMemoryPheromoneMemoryField
+
+
+# ── Factory ────────────────────────────────────────────────────────────
+
+def get_memory_field(
+    config: dict,
+    node_ids: List[str],
+    initial_state: Optional[np.ndarray] = None,
+) -> BasePheromoneMemoryField:
+    """Instantiate the appropriate memory field from *config*.
+
+    Reads ``storage_backend`` from the config dict and returns either an
+    :class:`InMemoryPheromoneMemoryField` or
+    :class:`RedisPheromoneMemoryField`.
+
+    Parameters
+    ----------
+    config
+        Full configuration dict (typically loaded from ``config.yaml``).
+    node_ids
+        Ordered list of worker node identifiers.
+    initial_state
+        Optional ``(N_nodes, 4)`` array to seed the field.
+    """
+    backend = config.get("storage_backend", "in_memory")
+
+    common_kwargs = dict(
+        saturation_scale=config.get("saturation_scale", 0.1),
+        decay_success=config.get("decay_success", True),
+        decay_capability=config.get("decay_capability", True),
+    )
+
+    if backend == "redis":
+        redis_cfg = config.get("redis", {})
+        return RedisPheromoneMemoryField(
+            node_ids=node_ids,
+            redis_host=redis_cfg.get("host", "localhost"),
+            redis_port=redis_cfg.get("port", 6379),
+            redis_db=redis_cfg.get("db", 0),
+            redis_password=redis_cfg.get("password"),
+            decay_rate=config.get("decay_rate", 0.05),
+            decay_interval_sec=config.get("decay_interval_sec", 0.5),
+            **common_kwargs,
+        )
+    else:
+        return InMemoryPheromoneMemoryField(
+            node_ids=node_ids,
+            initial_state=initial_state,
+            **common_kwargs,
+        )

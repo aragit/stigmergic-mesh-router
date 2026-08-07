@@ -3,13 +3,13 @@
 import asyncio
 import logging
 
-from .memory_field import PheromoneMemoryField
+from .memory_field import BasePheromoneMemoryField
 
 logger = logging.getLogger(__name__)
 
 
 async def start_decay_engine(
-    memory_field: PheromoneMemoryField,
+    memory_field: BasePheromoneMemoryField,
     decay_rate: float,
     interval_sec: float,
 ) -> None:

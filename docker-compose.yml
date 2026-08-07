@@ -1,38 +1,58 @@
 version: "3.8"
 
 services:
-  api:
+  redis:
+    image: redis:7-alpine
+    container_name: stigmergic-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  router-1:
     build: .
-    container_name: stigmergic-router
+    container_name: stigmergic-router-1
+    depends_on:
+      - redis
     ports:
       - "8000:8000"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./core:/app/core
       - ./api:/app/api
+    environment:
+      - STIGMERGIC_STORAGE_BACKEND=redis
+      - STIGMERGIC_REDIS_HOST=redis
     command: uvicorn api.server:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
 
-  worker-alpha:
+  router-2:
     build: .
-    container_name: worker-alpha
+    container_name: stigmergic-router-2
+    depends_on:
+      - redis
+    ports:
+      - "8001:8000"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-    command: python3 -c "
-import asyncio; from core.worker_node import CPUMockWorkerNode; w = CPUMockWorkerNode('worker-alpha', 0.05, 0.5); asyncio.run(w.execute_inference('warmup'))"
+      - ./core:/app/core
+      - ./api:/app/api
+    environment:
+      - STIGMERGIC_STORAGE_BACKEND=redis
+      - STIGMERGIC_REDIS_HOST=redis
+    command: uvicorn api.server:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
 
-  worker-beta:
-    build: .
-    container_name: worker-beta
-    volumes:
-      - ./config.yaml:/app/config.yaml:ro
-    command: python3 -c "
-import asyncio; from core.worker_node import CPUMockWorkerNode; w = CPUMockWorkerNode('worker-beta', 0.05, 0.5); asyncio.run(w.execute_inference('warmup'))"
+  worker-ollama:
+    image: ollama/ollama:latest
+    container_name: stigmergic-ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
 
-  worker-gamma:
-    build: .
-    container_name: worker-gamma
-    volumes:
-      - ./config.yaml:/app/config.yaml:ro
-    command: python3 -c "
-import asyncio; from core.worker_node import CPUMockWorkerNode; w = CPUMockWorkerNode('worker-gamma', 0.10, 0.5); asyncio.run(w.execute_inference('warmup'))"
+  worker-vllm:
+    image: vllmai/vllm:latest
+    container_name: stigmergic-vllm
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+    command: --model facebook/opt-125m

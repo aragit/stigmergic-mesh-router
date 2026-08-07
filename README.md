@@ -45,6 +45,7 @@ A decentralized, hardware-agnostic LLM and microservice load router powered by c
 - **Hardware-Agnostic Worker Mesh**: Standardized worker abstraction supporting simulated CPU nodes, local edge runtimes (Ollama, llama.cpp), and remote vLLM GPU clusters.
 - **OpenAI API Compatibility**: Native FastAPI ingress supporting `/v1/chat/completions`, `/v1/completions`, and `/v1/models`.
 - **Real-time Observability**: Built-in Rich terminal UI dashboard displaying real-time trace heatmaps, load distribution, and calculated attraction scores.
+- **Distributed Scale-Out**: Multiple router replicas (containers or processes) share a single pheromone substrate via Redis, enabling horizontal scaling. Atomic Lua-based trace deposits guarantee consistency under concurrent writes without locks.
 
 ## Mathematical Foundations
 
@@ -286,8 +287,9 @@ pip install -r requirements.txt
 pytest tests/ -v
 ```
 
-**69 tests** across two modules:
+**77 tests** across three modules:
 - `tests/test_memory_field.py` — 29 tests (initialization, deposition, evaporation, concurrency)
+- `tests/test_redis_memory_field.py` — 8 tests (Redis atomic deposits, evaporation flags, concurrent no-lost-writes, fakeredis backend)
 - `tests/test_router_agent.py` — 40 tests (3D/4D scores, softmax, capability matching, routing feedback, sampling bias)
 
 ## Docker
@@ -303,4 +305,31 @@ Or build the image standalone:
 ```bash
 docker build -t stigmergic-mesh-router .
 docker run -p 8000:8000 stigmergic-mesh-router
+```
+
+## Redis Scale-Out
+
+The `RedisPheromoneMemoryField` enables multi-replica router deployments: each router instance (container/process) shares the same Redis-backed pheromone matrix, ensuring consistent, atomic trace updates via Lua scripts. Configure via `config.yaml`:
+
+```yaml
+storage_backend: "redis"
+decay_rate: 0.05
+decay_interval_sec: 0.5
+redis:
+  host: "redis"
+  port: 6379
+  db: 0
+```
+
+Docker Compose spins up 2 router replicas and a Redis instance:
+
+```bash
+docker-compose up --build
+# router-1 on :8000, router-2 on :8001
+```
+
+Run the scale-out benchmark (uses `fakeredis`, no live Redis needed):
+
+```bash
+python3 benchmarks/redis_scaleout_test.py
 ```

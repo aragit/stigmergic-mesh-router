@@ -21,7 +21,10 @@ from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
 
 from core.decay_engine import start_decay_engine
-from core.memory_field import PheromoneMemoryField
+from core.memory_field import (
+    BasePheromoneMemoryField,
+    get_memory_field,
+)
 from core.router_agent import StigmergicRouterAgent
 from core.worker_node import (
     BaseWorkerNode,
@@ -91,7 +94,7 @@ class MeshState:
     def __init__(self) -> None:
         self.config: Dict[str, Any] = {}
         self.workers: Dict[str, BaseWorkerNode] = {}
-        self.memory_field: Optional[PheromoneMemoryField] = None
+        self.memory_field: Optional[BasePheromoneMemoryField] = None
         self.router: Optional[StigmergicRouterAgent] = None
         self.decay_task: Optional[asyncio.Task] = None
 
@@ -198,7 +201,7 @@ async def lifespan(app: FastAPI):
     }
     node_ids = list(_state.workers.keys())
 
-    _state.memory_field = PheromoneMemoryField(node_ids=node_ids)
+    _state.memory_field = get_memory_field(_state.config, node_ids)
     _state.router = StigmergicRouterAgent(
         workers=_state.workers,
         memory_field=_state.memory_field,
