@@ -40,9 +40,12 @@ async def main() -> None:
 
     # --- Mock cluster: 2 fast nodes, 1 slow node -------------------------
     worker_specs = {
-        "cpu_fast_0": {"base_delay_sec": 0.05, "load_factor": 0.5},
-        "cpu_fast_1": {"base_delay_sec": 0.05, "load_factor": 0.5},
-        "cpu_slow_0": {"base_delay_sec": 0.30, "load_factor": 0.5},
+        "cpu_fast_0": {"base_delay_sec": 0.05, "load_factor": 0.5,
+                       "capability_tags": ["slm", "fast"]},
+        "cpu_fast_1": {"base_delay_sec": 0.05, "load_factor": 0.5,
+                       "capability_tags": ["slm", "fast"]},
+        "cpu_slow_0": {"base_delay_sec": 0.30, "load_factor": 0.5,
+                       "capability_tags": ["llm", "balanced"]},
     }
     workers: Dict[str, CPUMockWorkerNode] = {
         nid: CPUMockWorkerNode(node_id=nid, **cfg)
@@ -59,6 +62,7 @@ async def main() -> None:
         memory_field=memory_field,
         weights=config["weights"],
         temperature=config["temperature"],
+        delta=config.get("weights", {}).get("delta", 1.5),
         rng=rng,
     )
 
@@ -148,12 +152,14 @@ async def main() -> None:
     state_table.add_column("V (Success)", justify="right", style="green")
     state_table.add_column("L (Latency)", justify="right", style="yellow")
     state_table.add_column("S (Saturation)", justify="right", style="red")
+    state_table.add_column("C (Capability)", justify="right", style="magenta")
     for i, nid in enumerate(node_ids):
         state_table.add_row(
             nid,
             f"{state[i, 0]:.4f}",
             f"{state[i, 1]:.4f}",
             f"{state[i, 2]:.4f}",
+            f"{state[i, 3]:.4f}",
         )
     console.print(state_table)
 

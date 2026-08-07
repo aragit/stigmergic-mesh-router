@@ -4,20 +4,24 @@ weights:
   alpha: 1.0   # success weight
   beta: 2.0    # latency weight
   gamma: 1.5   # saturation weight
+  delta: 1.5   # capability fit weight
 temperature: 0.5
 server:
   host: "0.0.0.0"
   port: 8000
   workers:
-    - node_id: "mock_node_0"
+    - node_id: "slm-fast"
       type: "mock"
-      base_delay_sec: 0.05
-      load_factor: 0.5
-    - node_id: "mock_node_1"
+      base_delay_sec: 0.03
+      load_factor: 0.3
+      capability_tags: ["slm", "fast", "low-latency"]
+    - node_id: "llm-reasoner"
       type: "mock"
-      base_delay_sec: 0.05
+      base_delay_sec: 0.15
       load_factor: 0.5
-    - node_id: "mock_node_2"
+      capability_tags: ["llm", "reasoning"]
+    - node_id: "llm-balanced"
       type: "mock"
-      base_delay_sec: 0.10
-      load_factor: 0.5
+      base_delay_sec: 0.08
+      load_factor: 0.4
+      capability_tags: ["llm", "balanced"]

@@ -1,19 +1,30 @@
-"""Worker node abstractions: abstract base, CPU mock, and GPU/vLLM client."""
+"""Worker node abstractions: abstract base, CPU mock, GPU/vLLM client, and Ollama client."""
 
 import asyncio
 import random
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 import httpx
 
 
 class BaseWorkerNode(ABC):
-    """Abstract base class for all worker nodes in the mesh."""
+    """Abstract base class for all worker nodes in the mesh.
 
-    def __init__(self, node_id: str) -> None:
+    Subclasses must implement :meth:`execute_inference`.  When declared
+    via configuration, each worker can expose a list of ``capability_tags``
+    (e.g. ``["slm", "fast", "low-latency"]``) that the router uses to
+    compute a capability-fit trace (C) and bias routing decisions.
+    """
+
+    def __init__(
+        self,
+        node_id: str,
+        capability_tags: Optional[List[str]] = None,
+    ) -> None:
         self.node_id: str = node_id
+        self.capability_tags: List[str] = capability_tags or []
 
     @abstractmethod
     async def execute_inference(
@@ -58,8 +69,9 @@ class CPUMockWorkerNode(BaseWorkerNode):
         base_delay_sec: float = 0.05,
         load_factor: float = 0.5,
         success_rate: float = 1.0,
+        capability_tags: Optional[List[str]] = None,
     ) -> None:
-        super().__init__(node_id)
+        super().__init__(node_id, capability_tags)
         self.base_delay_sec: float = base_delay_sec
         self.load_factor: float = load_factor
         self.success_rate: float = success_rate
@@ -78,14 +90,10 @@ class CPUMockWorkerNode(BaseWorkerNode):
 
         result: Dict[str, Any] = {}
         try:
-            # Simulated processing delay compounded by concurrency load
             delay = self.base_delay_sec * (1.0 + start_load * self.load_factor)
             await asyncio.sleep(delay)
 
-            # Simulate token generation length
             tokens = random.randint(max(10, max_tokens // 4), max_tokens)
-
-            # Simulate success (could fail with probability 1 - success_rate)
             success = random.random() < self.success_rate
 
             self.requests_served += 1
@@ -101,15 +109,13 @@ class CPUMockWorkerNode(BaseWorkerNode):
         finally:
             async with self._lock:
                 self._active_load -= 1
-                # Residual load: how many OTHER requests remain in-flight
-                # after this one completes.  Zero means the node is now idle.
                 result["active_load"] = max(0, self._active_load)
 
         return result
 
 
 class GPUvLLMWorkerNode(BaseWorkerNode):
-    """Asynchronous client for remote vLLM / Ollama ``/v1/completions`` endpoints.
+    """Asynchronous client for remote vLLM ``/v1/completions`` endpoints.
 
     Wraps ``httpx.AsyncClient`` to issue non-blocking HTTP requests to a
     remote LLM inference server.  Supports optional bearer-token auth.
@@ -122,8 +128,9 @@ class GPUvLLMWorkerNode(BaseWorkerNode):
         api_key: str = "",
         model: str = "default",
         timeout_sec: float = 30.0,
+        capability_tags: Optional[List[str]] = None,
     ) -> None:
-        super().__init__(node_id)
+        super().__init__(node_id, capability_tags)
         self.base_url: str = base_url.rstrip("/")
         self.api_key: str = api_key
         self.model: str = model
@@ -139,7 +146,6 @@ class GPUvLLMWorkerNode(BaseWorkerNode):
     ) -> Dict[str, Any]:
         async with self._lock:
             self._active_load += 1
-            start_load = self._active_load
 
         start = time.monotonic()
         result: Dict[str, Any] = {}
@@ -178,6 +184,94 @@ class GPUvLLMWorkerNode(BaseWorkerNode):
                 "tokens": tokens,
                 "latency_sec": elapsed,
                 "success": True,
+                "text": text,
+            }
+        except Exception as exc:
+            elapsed = time.monotonic() - start
+            result = {
+                "node_id": self.node_id,
+                "prompt": prompt,
+                "max_tokens": max_tokens,
+                "tokens": 0,
+                "latency_sec": elapsed,
+                "success": False,
+                "error": str(exc),
+            }
+        finally:
+            async with self._lock:
+                self._active_load -= 1
+                result["active_load"] = max(0, self._active_load)
+
+        return result
+
+
+class OllamaWorkerNode(BaseWorkerNode):
+    """Asynchronous client for Ollama ``/api/generate`` and ``/api/chat`` endpoints.
+
+    Communicates with a local or remote Ollama server using the native
+    Ollama REST API.  Each worker can declare capability tags (e.g.
+    ``["slm", "fast"]``) so the stigmergic router can prefer it for
+    requests that match its declared profile.
+    """
+
+    def __init__(
+        self,
+        node_id: str,
+        base_url: str,
+        model: str = "phi3",
+        timeout_sec: float = 60.0,
+        capability_tags: Optional[List[str]] = None,
+    ) -> None:
+        super().__init__(node_id, capability_tags)
+        self.base_url: str = base_url.rstrip("/")
+        self.model: str = model
+        self.timeout: httpx.Timeout = httpx.Timeout(timeout_sec)
+        self._active_load: int = 0
+        self._lock = asyncio.Lock()
+        self.requests_served: int = 0
+
+    async def execute_inference(
+        self,
+        prompt: str,
+        max_tokens: int = 128,
+    ) -> Dict[str, Any]:
+        async with self._lock:
+            self._active_load += 1
+
+        start = time.monotonic()
+        result: Dict[str, Any] = {}
+        try:
+            payload: Dict[str, Any] = {
+                "model": self.model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "num_predict": max_tokens,
+                },
+            }
+
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    f"{self.base_url}/api/generate",
+                    json=payload,
+                )
+                response.raise_for_status()
+                data = response.json()
+
+            elapsed = time.monotonic() - start
+            self.requests_served += 1
+
+            text = data.get("response", "")
+            done = data.get("done", True)
+            tokens = data.get("eval_count", len(text.split()))
+
+            result = {
+                "node_id": self.node_id,
+                "prompt": prompt,
+                "max_tokens": max_tokens,
+                "tokens": tokens,
+                "latency_sec": elapsed,
+                "success": done,
                 "text": text,
             }
         except Exception as exc:

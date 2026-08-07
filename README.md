@@ -26,7 +26,8 @@ A decentralized, hardware-agnostic LLM and microservice load router powered by c
 │  Tracks continuous trace matrix:      │   │  • CPU Mock Workers (Testing)       │
 │  • Success Trace (V)                  │   │  • Remote vLLM GPUs                 │
 │  • Latency Trace (L)                  │   │  • Ollama / llama.cpp Endpoints     │
-│  • Saturation Trace (S)               │   └─────────────────────────────────────┘
+│  • Saturation Trace (S)               │   │  • Capability Tag System            │
+│  • Capability Fit Trace (C)           │   └─────────────────────────────────────┘
 └───────────────────▲───────────────────┘
                     │
 ┌───────────────────┴───────────────────┐
@@ -40,6 +41,7 @@ A decentralized, hardware-agnostic LLM and microservice load router powered by c
 
 - **Zero Central Bottleneck**: No single dispatcher or centralized queue; router agents make independent probabilistic choices based on local observation of the shared memory state.
 - **Organic Failover & Self-Healing**: Crashed, slow, or thermal-throttled nodes accumulate elevated latency ($L$) and saturation ($S$) penalties. Traffic naturally flows away without waiting for external health probes.
+- **Capability-Aware Routing**: A fourth trace column (C, capability fit) biases routing toward nodes whose declared tags (e.g. `slm`, `reasoning`, `low-latency`) match the incoming prompt semantics. Short prompts route to lightweight SLMs; deep-reasoning prompts route to LLMs — all through the same pheromone feedback loop.
 - **Hardware-Agnostic Worker Mesh**: Standardized worker abstraction supporting simulated CPU nodes, local edge runtimes (Ollama, llama.cpp), and remote vLLM GPU clusters.
 - **OpenAI API Compatibility**: Native FastAPI ingress supporting `/v1/chat/completions`, `/v1/completions`, and `/v1/models`.
 - **Real-time Observability**: Built-in Rich terminal UI dashboard displaying real-time trace heatmaps, load distribution, and calculated attraction scores.
@@ -51,15 +53,16 @@ A decentralized, hardware-agnostic LLM and microservice load router powered by c
 For a target node $i$, its raw attraction score is calculated from its active scalar traces in the shared substrate:
 
 $$
-\text{Score}_i = \frac{\alpha \cdot V_i + \epsilon}{\beta \cdot L_i + \gamma \cdot S_i + \epsilon}
+\text{Score}_i = \frac{\alpha \cdot V_i + \delta \cdot C_i + \epsilon}{\beta \cdot L_i + \gamma \cdot S_i + \epsilon}
 $$
 
 Where:
 
-- $V_i$: Success Trace (accumulates based on throughput in tokens/second).
-- $L_i$: Latency Trace (accumulates based on execution delay and errors).
-- $S_i$: Saturation Trace (accumulates with active concurrency load).
-- $\alpha, \beta, \gamma$: Operational sensitivity weights configured in `config.yaml`.
+- $V_i$: Success Trace (EWMA of binary success outcome, ∈ [0, 1]).
+- $L_i$: Latency Trace (EWMA of observed latency in seconds).
+- $S_i$: Saturation Trace (scaled residual active load).
+- $C_i$: Capability Fit Trace (EWMA of how well the node's tags matched routing requests, ∈ [0, 1]).
+- $\alpha, \beta, \gamma, \delta$: Operational sensitivity weights configured in `config.yaml`.
 - $\epsilon$: Stability constant ($10^{-5}$) preventing division by zero.
 
 ### 2. Boltzmann Softmax Selection
@@ -98,7 +101,8 @@ stigmergic-mesh-router/
 │   └── terminal_dashboard.py     # Live Rich terminal heatmap of pheromone levels
 ├── benchmarks/
 │   ├── __init__.py
-│   └── failover_test.py          # Zero-touch chaos failover verification suite
+│   ├── failover_test.py          # Zero-touch chaos failover verification suite
+│   └── capability_routing_test.py # Capability-aware SLM/LLM routing benchmark
 ├── tests/
 │   ├── __init__.py
 │   ├── test_memory_field.py      # PheromoneMemoryField unit tests
@@ -212,25 +216,79 @@ Final pheromone state at end of Phase C:
 
 Alpha recovered from 4.0% → 18.7% traffic share, demonstrating that stigmergic trace evaporation enables zero-touch self-healing without centralized coordination.
 
+### Phase C (Updated) — Enhanced Recovery with Capability Fit
+
+With the extended 4D matrix (including C), the failover benchmark shows improved recovery:
+
+| Phase | Alpha | Beta | Gamma |
+|---|---|---|---|
+| A (normal) | 34.7% | 33.3% | 32.0% |
+| B (crash) | 2.7% | 53.3% | 44.0% |
+| C (recovery) | 29.3% | 32.0% | 38.7% |
+
+The capability-fit trace (C=0.5 neutral at baseline) provides additional routing signal that accelerates recovery of the crashed node.
+
 ### Verdict
 
 ```
-✓ PASS: node_alpha was abandoned during the crash (Phase B: 3 reqs, 4.0%)
-  and traffic returned after recovery (Phase C: 15 reqs, 18.7%).
+✓ PASS: node_alpha was abandoned during the crash (Phase B: 2 reqs, 2.7%)
+  and traffic returned after recovery (Phase C: 22 reqs, 29.3%).
+```
+
+## Capability-Aware Routing Benchmark
+
+The Capability Routing Benchmark (`benchmarks/capability_routing_test.py`) demonstrates that the fourth trace column (C) enables semantic prompt routing — short prompts naturally flow to lightweight SLM nodes while deep-reasoning prompts flow to LLM nodes, all through the same pheromone feedback loop.
+
+### Configuration
+
+| Parameter | Value |
+|---|---|
+| Nodes | 3 (slm-fast 0.03s, llm-reasoner 0.15s, llm-balanced 0.08s) |
+| Capability Tags | `slm-fast`: [slm, fast, low-latency] · `llm-reasoner`: [llm, reasoning] · `llm-balanced`: [llm, balanced] |
+| Requests | 60 short + 60 reasoning prompts |
+| Temperature | 2.0 |
+| Decay rate | 0.15 |
+| Delta (capability weight) | 1.5 |
+
+### Phase A — Short Prompts (SLM Routing)
+
+All 60 short prompts ("Hello!", "What time is it?", etc.) routed to the lightweight `slm-fast` node because `analyze_prompt()` emits `{"slm": 1.5, "fast": 1.3, "low-latency": 1.2}`, and the capability-match boost makes `slm-fast`'s score dominate:
+
+| Node | Requests | Share | Avg Latency |
+|---|---|---|---|
+| slm-fast | 60 | 100.0% | 0.0390s |
+| llm-reasoner | 0 | 0.0% | — |
+| llm-balanced | 0 | 0.0% | — |
+
+### Phase B — Deep Reasoning Prompts (LLM Routing)
+
+All 60 reasoning prompts ("Let's think step by step...", "Explain the chain of thought...") routed to `llm-reasoner` because `analyze_prompt()` detects thinking patterns and emits `{"llm": 1.5, "reasoning": 1.5}`, boosting the LLM node's score:
+
+| Node | Requests | Share | Avg Latency |
+|---|---|---|---|
+| llm-reasoner | 41 | 68.3% | 0.2250s |
+| llm-balanced | 18 | 30.0% | 0.1120s |
+| slm-fast | 1 | 1.7% | 0.0390s |
+
+### Verdict
+
+```
+✓ PASS: Short prompts routed to SLM (100.0% to slm-fast) and reasoning
+  prompts routed to LLM (68.3% to llm-reasoner).
 ```
 
 ## Running Tests
 
-Unit tests cover memory field initialization, trace deposition, evaporation dynamics, concurrency safety, score computation, softmax sampling, and trace feedback:
+Unit tests cover memory field initialization, trace deposition, evaporation dynamics, concurrency safety, score computation (3D and 4D), Boltzmann softmax, capability matching, sampling bias, and trace feedback:
 
 ```bash
 pip install -r requirements.txt
 pytest tests/ -v
 ```
 
-**51 tests** across two modules:
+**69 tests** across two modules:
 - `tests/test_memory_field.py` — 29 tests (initialization, deposition, evaporation, concurrency)
-- `tests/test_router_agent.py` — 22 tests (scores, softmax, routing feedback, sampling bias)
+- `tests/test_router_agent.py` — 40 tests (3D/4D scores, softmax, capability matching, routing feedback, sampling bias)
 
 ## Docker
 

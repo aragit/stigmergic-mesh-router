@@ -173,20 +173,22 @@ async def main() -> None:
     # this, the EWMA alpha=0.5 causes V to jump from 0→0.5 on the first
     # request, creating a runaway positive-feedback bias.
     initial_state = np.full(
-        (len(node_ids), 3),
-        [1.0, STEADY_STATE_LATENCY, 0.0],
+        (len(node_ids), 4),
+        [1.0, STEADY_STATE_LATENCY, 0.0, 1.0],
         dtype=np.float64,
     )
     memory_field = PheromoneMemoryField(
         node_ids=node_ids,
         initial_state=initial_state,
-        decay_success=False,  # V persists so recovering nodes can re-attract
+        decay_success=False,
+        decay_capability=False,
     )
     router = StigmergicRouterAgent(
         workers=workers,
         memory_field=memory_field,
         weights=config["weights"],
         temperature=TEST_TEMPERATURE,
+        delta=config.get("weights", {}).get("delta", 1.5),
         rng=rng,
     )
 
@@ -248,6 +250,7 @@ async def main() -> None:
     state_table.add_column("V (Success)", justify="right", style="green")
     state_table.add_column("L (Latency)", justify="right", style="yellow")
     state_table.add_column("S (Saturation)", justify="right", style="red")
+    state_table.add_column("C (Capability)", justify="right", style="magenta")
     state_table.add_column("Requests Served", justify="right", style="blue")
     for i, nid in enumerate(node_ids):
         state_table.add_row(
@@ -255,6 +258,7 @@ async def main() -> None:
             f"{state[i, 0]:.4f}",
             f"{state[i, 1]:.4f}",
             f"{state[i, 2]:.4f}",
+            f"{state[i, 3]:.4f}",
             str(workers[nid].requests_served),
         )
     console.print()

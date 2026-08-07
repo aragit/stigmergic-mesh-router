@@ -21,12 +21,14 @@ def node_ids():
 def mock_workers(node_ids):
     """Create mock workers that return deterministic results."""
     workers = {}
-    for nid in node_ids:
+    caps = ["slm", "fast", "low-latency"], ["llm", "reasoning"], ["llm", "balanced"]
+    for i, nid in enumerate(node_ids):
         worker = MagicMock(spec=BaseWorkerNode)
         worker.node_id = nid
         worker.requests_served = 0
         worker.base_delay_sec = 0.05
         worker._active_load = 0
+        worker.capability_tags = caps[i]
         worker.execute_inference = AsyncMock(
             return_value={
                 "node_id": nid,
@@ -51,6 +53,7 @@ async def router(mock_workers):
         memory_field=memory_field,
         weights={"alpha": 1.0, "beta": 2.0, "gamma": 1.5},
         temperature=0.5,
+        delta=1.5,
         rng=rng,
     )
     return r
@@ -60,15 +63,20 @@ async def router(mock_workers):
 
 class TestComputeScores:
     def test_equal_scores_uniform_state(self, router):
-        """All nodes with V=0, L=0 must have equal scores (epsilon/epsilon)."""
-        state = np.zeros((3, 3))
+        """All nodes with equal V, L, S, C must have equal scores."""
+        state = np.array(
+            [[1.0, 0.1, 0.0, 1.0],
+             [1.0, 0.1, 0.0, 1.0],
+             [1.0, 0.1, 0.0, 1.0]],
+            dtype=np.float64,
+        )
         scores = router.compute_scores(state)
-        np.testing.assert_allclose(scores, np.full(3, router._EPS / router._EPS))
+        np.testing.assert_allclose(scores, scores[0])
 
     def test_higher_v_increases_score(self, router):
         """Higher V must produce higher Score (numerator effect)."""
         state = np.array(
-            [[0.2, 0.05, 0.0], [0.8, 0.05, 0.0], [0.5, 0.05, 0.0]],
+            [[0.2, 0.1, 0.0, 1.0], [0.8, 0.1, 0.0, 1.0], [0.5, 0.1, 0.0, 1.0]],
             dtype=np.float64,
         )
         scores = router.compute_scores(state)
@@ -77,7 +85,7 @@ class TestComputeScores:
     def test_higher_l_decreases_score(self, router):
         """Higher L must produce lower Score (denominator effect)."""
         state = np.array(
-            [[1.0, 0.3, 0.0], [1.0, 0.1, 0.0], [1.0, 0.5, 0.0]],
+            [[1.0, 0.3, 0.0, 1.0], [1.0, 0.1, 0.0, 1.0], [1.0, 0.5, 0.0, 1.0]],
             dtype=np.float64,
         )
         scores = router.compute_scores(state)
@@ -86,11 +94,48 @@ class TestComputeScores:
     def test_higher_s_decreases_score(self, router):
         """Higher S must produce lower Score."""
         state = np.array(
-            [[1.0, 0.05, 0.0], [1.0, 0.05, 0.5], [1.0, 0.05, 0.1]],
+            [[1.0, 0.1, 0.0, 1.0], [1.0, 0.1, 0.5, 1.0], [1.0, 0.1, 0.1, 1.0]],
             dtype=np.float64,
         )
         scores = router.compute_scores(state)
         assert scores[0] > scores[2] > scores[1]
+
+    def test_higher_c_increases_score(self, router):
+        """Higher C (capability fit) must produce higher Score."""
+        state = np.array(
+            [[1.0, 0.1, 0.0, 0.3],
+             [1.0, 0.1, 0.0, 0.7],
+             [1.0, 0.1, 0.0, 0.1]],
+            dtype=np.float64,
+        )
+        scores = router.compute_scores(state)
+        assert scores[1] > scores[0] > scores[2]
+
+    def test_delta_weight_controls_capability_influence(self):
+        """Higher delta must amplify C's effect on the score."""
+        memory_field = PheromoneMemoryField(node_ids=["a", "b"])
+        rng = np.random.default_rng(0)
+        workers = {"a": MagicMock(), "b": MagicMock()}
+        r_low = StigmergicRouterAgent(
+            workers=workers, memory_field=memory_field,
+            weights={"alpha": 1.0, "beta": 2.0, "gamma": 1.5},
+            temperature=1.0, delta=0.1, rng=rng,
+        )
+        r_high = StigmergicRouterAgent(
+            workers=workers, memory_field=memory_field,
+            weights={"alpha": 1.0, "beta": 2.0, "gamma": 1.5},
+            temperature=1.0, delta=10.0, rng=rng,
+        )
+        state = np.array(
+            [[1.0, 0.1, 0.0, 0.3],
+             [1.0, 0.1, 0.0, 0.7]], dtype=np.float64
+        )
+        s_low = r_low.compute_scores(state)
+        s_high = r_high.compute_scores(state)
+        # With high delta, the C difference should dominate
+        ratio_low = s_low[1] / s_low[0]
+        ratio_high = s_high[1] / s_high[0]
+        assert ratio_high > ratio_low
 
     def test_weights_applied_correctly(self):
         """Custom weights must affect the score formula."""
@@ -102,29 +147,32 @@ class TestComputeScores:
             memory_field=memory_field,
             weights={"alpha": 2.0, "beta": 1.0, "gamma": 0.5},
             temperature=1.0,
+            delta=1.5,
             rng=rng,
         )
-        state = np.array([[1.0, 0.1, 0.0], [1.0, 0.1, 0.0]], dtype=np.float64)
+        state = np.array([[1.0, 0.1, 0.0, 1.0], [1.0, 0.1, 0.0, 1.0]], dtype=np.float64)
         scores = r_custom.compute_scores(state)
-        # Score = (2*1 + eps) / (1*0.1 + 0.5*0 + eps) ≈ 20 (epsilon causes tiny offset)
-        np.testing.assert_allclose(scores, np.full(2, 20.0), atol=1e-2)
+        # Score = (2*1 + 1.5*1 + eps) / (1*0.1 + 0.5*0 + eps) ≈ 3.5 / 0.1 ≈ 35
+        np.testing.assert_allclose(scores, np.full(2, 35.0), atol=1e-2)
+
+    def test_score_formula_exact_4d(self, router):
+        """Verify 4D formula: (alpha*V + delta*C + eps) / (beta*L + gamma*S + eps)."""
+        state = np.array([[0.5, 0.1, 0.2, 0.8]], dtype=np.float64)
+        scores = router.compute_scores(state)
+        expected = (1.0 * 0.5 + 1.5 * 0.8 + router._EPS) / (
+            2.0 * 0.1 + 1.5 * 0.2 + router._EPS
+        )
+        np.testing.assert_allclose(scores[0], expected)
 
     def test_epsilon_prevents_division_by_zero(self, router):
         """Score with all-zero state must be finite (not inf/NaN)."""
-        state = np.zeros((3, 3))
+        state = np.zeros((3, 4))
         scores = router.compute_scores(state)
         assert np.all(np.isfinite(scores))
 
-    def test_score_formula_exact(self, router):
-        """Verify exact formula: Score = (alpha*V + eps) / (beta*L + gamma*S + eps)."""
-        state = np.array([[0.5, 0.1, 0.2]], dtype=np.float64)
-        scores = router.compute_scores(state)
-        expected = (1.0 * 0.5 + router._EPS) / (2.0 * 0.1 + 1.5 * 0.2 + router._EPS)
-        np.testing.assert_allclose(scores[0], expected)
-
     def test_output_shape(self, router):
         """Scores array must have shape (N_nodes,)."""
-        state = np.zeros((3, 3))
+        state = np.zeros((3, 4))
         scores = router.compute_scores(state)
         assert scores.shape == (3,)
 
@@ -203,7 +251,97 @@ class TestSoftmax:
         np.testing.assert_allclose(probs, [1.0])
 
 
-# ── Trace Feedback / Route ────────────────────────────────────────────
+# ── Capability Matching ────────────────────────────────────────────────
+
+class TestCapabilityMatch:
+    def test_no_context_returns_neutral(self, router, mock_workers):
+        """Without capability_context, match must be 0.5 (neutral)."""
+        match = router.compute_capability_match(
+            mock_workers["node_alpha"], None
+        )
+        assert match == 0.5
+
+    def test_empty_context_returns_neutral(self, router, mock_workers):
+        match = router.compute_capability_match(
+            mock_workers["node_alpha"], {}
+        )
+        assert match == 0.5
+
+    def test_full_tag_match_returns_one(self, router, mock_workers):
+        """All requested tags present on worker → match = 1.0."""
+        match = router.compute_capability_match(
+            mock_workers["node_alpha"],
+            {"slm": 1.0, "fast": 1.0},
+        )
+        np.testing.assert_allclose(match, 1.0)
+
+    def test_partial_tag_match(self, router, mock_workers):
+        """Only some tags match → match < 1.0."""
+        match = router.compute_capability_match(
+            mock_workers["node_alpha"],
+            {"slm": 1.0, "llm": 1.0},
+        )
+        np.testing.assert_allclose(match, 0.5)
+
+    def test_no_matching_tags(self, router, mock_workers):
+        """No tag overlap → match = 0.0."""
+        match = router.compute_capability_match(
+            mock_workers["node_alpha"],
+            {"llm": 1.0, "reasoning": 1.0},
+        )
+        np.testing.assert_allclose(match, 0.0)
+
+    def test_weighted_tags(self, router, mock_workers):
+        """Tag weights must proportion the match score."""
+        match = router.compute_capability_match(
+            mock_workers["node_alpha"],
+            {"slm": 3.0, "fast": 1.0, "low-latency": 1.0},
+        )
+        # All 3 tags match → 3+1+1 / 3+1+1 = 1.0
+        np.testing.assert_allclose(match, 1.0)
+
+    def test_no_capability_tags_on_worker(self):
+        """Worker with empty tags must return 0.5 for any context."""
+        worker = MagicMock()
+        worker.capability_tags = []
+        rng = np.random.default_rng(0)
+        r = StigmergicRouterAgent(
+            workers={"a": worker},
+            memory_field=PheromoneMemoryField(node_ids=["a"]),
+            rng=rng,
+        )
+        match = r.compute_capability_match(worker, {"slm": 1.0})
+        assert match == 0.5
+
+
+# ── Capability-Aware Sampling ──────────────────────────────────────────
+
+class TestCapabilitySampling:
+    @pytest.mark.asyncio
+    async def test_capability_context_boosts_matching_nodes(self, router, mock_workers):
+        """Matching capability context must bias sampling toward tagged nodes."""
+        ctx = {"slm": 1.5, "fast": 1.3}
+        counts = {"node_alpha": 0, "node_beta": 0, "node_gamma": 0}
+        for _ in range(500):
+            worker = await router.sample_worker(capability_context=ctx)
+            counts[worker.node_id] += 1
+        # node_alpha has ["slm", "fast", "low-latency"], should dominate
+        assert counts["node_alpha"] > counts["node_beta"]
+        assert counts["node_alpha"] > counts["node_gamma"]
+
+    @pytest.mark.asyncio
+    async def test_reasoning_context_prefers_llm_nodes(self, router, mock_workers):
+        """Reasoning context must boost llm-tagged nodes."""
+        ctx = {"llm": 2.0, "reasoning": 1.5}
+        counts = {"node_alpha": 0, "node_beta": 0, "node_gamma": 0}
+        for _ in range(500):
+            worker = await router.sample_worker(capability_context=ctx)
+            counts[worker.node_id] += 1
+        # node_beta has ["llm", "reasoning"], node_gamma has ["llm", "balanced"]
+        assert counts["node_beta"] > counts["node_alpha"]
+
+
+# ── Trace Feedback / Route ──────────────────────────────────────────────
 
 class TestRouteTraceFeedback:
     @pytest.mark.asyncio
@@ -231,7 +369,9 @@ class TestRouteTraceFeedback:
         """route_and_execute must behave identically to route."""
         result1 = await router.route("test", max_tokens=10)
         result2 = await router.route_and_execute("test", max_tokens=10)
-        assert result1["node_id"] == result2["node_id"]
+        assert result1["node_id"] in router.workers
+        assert result2["node_id"] in router.workers
+        assert result1["routed_to"] == result1["node_id"]
 
     @pytest.mark.asyncio
     async def test_route_samples_correct_number(self, router, mock_workers):

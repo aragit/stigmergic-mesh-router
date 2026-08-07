@@ -23,7 +23,12 @@ from starlette.middleware.cors import CORSMiddleware
 from core.decay_engine import start_decay_engine
 from core.memory_field import PheromoneMemoryField
 from core.router_agent import StigmergicRouterAgent
-from core.worker_node import BaseWorkerNode, CPUMockWorkerNode, GPUvLLMWorkerNode
+from core.worker_node import (
+    BaseWorkerNode,
+    CPUMockWorkerNode,
+    GPUvLLMWorkerNode,
+    OllamaWorkerNode,
+)
 
 logger = logging.getLogger("stigmergic.api")
 
@@ -108,6 +113,7 @@ def _create_worker(spec: Dict[str, Any]) -> BaseWorkerNode:
             base_delay_sec=spec.get("base_delay_sec", 0.05),
             load_factor=spec.get("load_factor", 0.5),
             success_rate=spec.get("success_rate", 1.0),
+            capability_tags=spec.get("capability_tags"),
         )
     elif wtype == "vllm":
         return GPUvLLMWorkerNode(
@@ -116,9 +122,60 @@ def _create_worker(spec: Dict[str, Any]) -> BaseWorkerNode:
             api_key=spec.get("api_key", ""),
             model=spec.get("model", "default"),
             timeout_sec=spec.get("timeout_sec", 30.0),
+            capability_tags=spec.get("capability_tags"),
+        )
+    elif wtype == "ollama":
+        return OllamaWorkerNode(
+            node_id=node_id,
+            base_url=spec["base_url"],
+            model=spec.get("model", "phi3"),
+            timeout_sec=spec.get("timeout_sec", 60.0),
+            capability_tags=spec.get("capability_tags"),
         )
     else:
         raise ValueError(f"Unknown worker type: {wtype!r}")
+
+
+# ── Prompt Capability Analysis ─────────────────────────────────────────
+
+_THINKING_PATTERNS = [
+    "think", "reason", "step by step", "explain",
+    "why", "because", "analyze", "analysis",
+    "chain of thought", "let's think", "</thinking>",
+]
+_LONG_PROMPT_THRESHOLD = 500
+_SHORT_PROMPT_THRESHOLD = 100
+
+
+def analyze_prompt(prompt: str) -> Dict[str, float]:
+    """Analyze a prompt and return capability context multipliers.
+
+    Inspects prompt length and content to compute a mapping of
+    capability tags to importance weights.  Short, simple prompts bias
+    toward ``"slm"`` and ``"low-latency"`` tags; long prompts with
+    thinking/reasoning keywords bias toward ``"llm"`` and ``"reasoning"``
+    tags.
+    """
+    context: Dict[str, float] = {}
+    lowered = prompt.lower()
+    has_thinking = any(p in lowered for p in _THINKING_PATTERNS)
+
+    # Thinking/reasoning patterns override length-based routing — a
+    # short prompt that says "let's think step by step" still needs
+    # an LLM-capable node.
+    if has_thinking:
+        context["llm"] = 1.5
+        context["reasoning"] = 1.5
+    elif len(prompt) < _SHORT_PROMPT_THRESHOLD:
+        context["slm"] = 1.5
+        context["fast"] = 1.3
+        context["low-latency"] = 1.2
+
+    if len(prompt) > _LONG_PROMPT_THRESHOLD:
+        context["llm"] = context.get("llm", 1.0) * 1.5
+        context["balanced"] = 1.2
+
+    return context
 
 
 @asynccontextmanager
@@ -147,6 +204,7 @@ async def lifespan(app: FastAPI):
         memory_field=_state.memory_field,
         weights=_state.config.get("weights", {}),
         temperature=_state.config.get("temperature", 0.5),
+        delta=_state.config.get("weights", {}).get("delta", 1.5),
     )
 
     _state.decay_task = asyncio.create_task(
@@ -204,9 +262,11 @@ async def completions(request: CompletionRequest):
     if not _state.ready:
         raise HTTPException(status_code=503, detail="Router not initialised")
 
+    cap_context = analyze_prompt(request.prompt)
     result = await _state.router.route_and_execute(
         prompt=request.prompt,
         max_tokens=request.max_tokens,
+        capability_context=cap_context,
     )
 
     now = int(time.time())
@@ -250,10 +310,12 @@ async def chat_completions(request: ChatCompletionRequest):
         raise HTTPException(status_code=503, detail="Router not initialised")
 
     prompt = _messages_to_prompt(request.messages)
+    cap_context = analyze_prompt(prompt)
 
     result = await _state.router.route_and_execute(
         prompt=prompt,
         max_tokens=request.max_tokens,
+        capability_context=cap_context,
     )
 
     now = int(time.time())
