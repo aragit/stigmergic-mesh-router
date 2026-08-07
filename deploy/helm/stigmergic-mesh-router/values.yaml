@@ -1,0 +1,77 @@
+replicaCount: 3
+
+image:
+  repository: registry.barnabus.internal/stigmergic-mesh-router
+  pullPolicy: IfNotPresent
+  tag: "v1.0.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: "stigmergic-router-sa"
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  fsGroup: 10001
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+service:
+  type: ClusterIP
+  grpcPort: 50051
+  httpPort: 8080
+  metricsPort: 9090
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 15
+  targetCPUUtilizationPercentage: 75
+  targetMemoryUtilizationPercentage: 80
+  customMetrics:
+    entropyRateTarget: "150m"
+    activeRoutesTarget: "500"
+
+prometheusAdapter:
+  enabled: true
+  prometheusUrl: "http://prometheus-k8s.monitoring.svc.cluster.local:9090"
+
+serviceMonitor:
+  enabled: true
+  namespace: "monitoring"
+  interval: "15s"
+
+nodeSelector: {}
+tolerations: []
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: stigmergic-mesh-router
+          topologyKey: kubernetes.io/hostname

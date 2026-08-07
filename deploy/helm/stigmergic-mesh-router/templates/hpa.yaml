@@ -1,0 +1,59 @@
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "stigmergic-mesh-router.fullname" . }}
+  labels:
+    {{- include "stigmergic-mesh-router.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "stigmergic-mesh-router.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    - type: Pods
+      pods:
+        metric:
+          name: stigmergic_entropy_rate
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.autoscaling.customMetrics.entropyRateTarget }}
+    - type: Pods
+      pods:
+        metric:
+          name: agent_active_mesh_routes
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.autoscaling.customMetrics.activeRoutesTarget }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 15
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 4
+          periodSeconds: 15
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 60
+{{- end }}

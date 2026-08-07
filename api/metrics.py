@@ -73,6 +73,24 @@ stigmergic_request_duration_seconds = Histogram(
     buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
 )
 
+# ── Custom metrics for Kubernetes HPA via Prometheus Adapter ───────────────────
+
+stigmergic_entropy_rate_total = Counter(
+    "stigmergic_entropy_rate_total",
+    "Cumulative stigmergic entropy decay events — drives HPA scaling",
+)
+
+agent_active_mesh_routes = Gauge(
+    "agent_active_mesh_routes",
+    "Current count of active mesh routing slots per agent/pod",
+)
+
+routing_queue_latency_seconds = Histogram(
+    "routing_queue_latency_seconds",
+    "Total time requests spend queued before routing dispatch",
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
+)
+
 
 async def update_prometheus_metrics(
     memory_field: BasePheromoneMemoryField,
@@ -112,6 +130,12 @@ async def update_prometheus_metrics(
             if router_agent is not None:
                 score = float(router_agent.compute_scores(state)[i])
                 stigmergic_node_attraction_score.labels(node_id=nid).set(score)
+
+        # ── Custom HPA metrics ────────────────────────────────────────────
+        if router_agent is not None:
+            entropy_delta = float(abs(np.diff(state[:, 0]).sum())) if len(node_ids) > 1 else 0.0
+            stigmergic_entropy_rate_total.inc(entropy_delta)
+            agent_active_mesh_routes.set(int(router_agent.active_swarm_size()))
 
         logger.debug("Prometheus metrics updated for %d nodes", len(node_ids))
 

@@ -1,0 +1,15 @@
+apiVersion: v2
+name: stigmergic-mesh-router
+description: Production Helm chart for Stigmergic Mesh Router microservices with custom metric HPA
+type: application
+version: 0.10.0
+appVersion: "1.0.0"
+keywords:
+  - stigmergic
+  - multi-agent
+  - routing
+  - kubernetes
+  - hpa
+maintainers:
+  - name: Platform Engineering
+    email: platform@barnabus.internal

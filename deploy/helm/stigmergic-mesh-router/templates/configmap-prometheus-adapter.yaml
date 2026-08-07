@@ -1,0 +1,30 @@
+{{- if .Values.prometheusAdapter.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "stigmergic-mesh-router.fullname" . }}-prometheus-adapter-config
+  labels:
+    {{- include "stigmergic-mesh-router.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    rules:
+      - seriesQuery: 'stigmergic_entropy_rate_total{namespace!="",pod!=""}'
+        resources:
+          overrides:
+            namespace: {resource: "namespace"}
+            pod: {resource: "pod"}
+        name:
+          matches: "^(.*)_total"
+          as: "${1}"
+        metricsQuery: 'sum(rate(<<.Series>>{<<.LabelMatchers>>}[2m])) by (<<.GroupBy>>)'
+
+      - seriesQuery: 'agent_active_mesh_routes{namespace!="",pod!=""}'
+        resources:
+          overrides:
+            namespace: {resource: "namespace"}
+            pod: {resource: "pod"}
+        name:
+          matches: "^(.*)"
+          as: "${1}"
+        metricsQuery: 'avg(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)'
+{{- end }}

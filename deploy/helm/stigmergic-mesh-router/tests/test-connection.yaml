@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include \"stigmergic-mesh-router.fullname\" . }}-test-connection"
+  labels:
+    {{- include "stigmergic-mesh-router.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  restartPolicy: Never
+  containers:
+    - name: wget
+      image: curlimages/curl:8.7.1
+      command: ['sh', '-c', 'curl -sf "http://{{ include "stigmergic-mesh-router.fullname" . }}:{{ .Values.service.httpPort }}/ready" && echo "Connection OK"']
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+
