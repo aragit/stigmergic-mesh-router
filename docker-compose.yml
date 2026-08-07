@@ -1,0 +1,38 @@
+version: "3.8"
+
+services:
+  api:
+    build: .
+    container_name: stigmergic-router
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./core:/app/core
+      - ./api:/app/api
+    command: uvicorn api.server:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
+
+  worker-alpha:
+    build: .
+    container_name: worker-alpha
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    command: python3 -c "
+import asyncio; from core.worker_node import CPUMockWorkerNode; w = CPUMockWorkerNode('worker-alpha', 0.05, 0.5); asyncio.run(w.execute_inference('warmup'))"
+
+  worker-beta:
+    build: .
+    container_name: worker-beta
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    command: python3 -c "
+import asyncio; from core.worker_node import CPUMockWorkerNode; w = CPUMockWorkerNode('worker-beta', 0.05, 0.5); asyncio.run(w.execute_inference('warmup'))"
+
+  worker-gamma:
+    build: .
+    container_name: worker-gamma
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    command: python3 -c "
+import asyncio; from core.worker_node import CPUMockWorkerNode; w = CPUMockWorkerNode('worker-gamma', 0.10, 0.5); asyncio.run(w.execute_inference('warmup'))"

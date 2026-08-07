@@ -5,3 +5,5 @@ pydantic
 fastapi
 uvicorn
 rich
+pytest
+pytest-asyncio
