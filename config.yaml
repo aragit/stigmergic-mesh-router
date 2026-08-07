@@ -1,0 +1,7 @@
+decay_rate: 0.05
+decay_interval_sec: 0.5
+weights:
+  alpha: 1.0   # success weight
+  beta: 2.0    # latency weight
+  gamma: 1.5   # saturation weight
+temperature: 0.5
