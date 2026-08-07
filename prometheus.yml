@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 2s
+  evaluation_interval: 2s
+
+scrape_configs:
+  - job_name: "stigmergic-router-1"
+    static_configs:
+      - targets: ["router-1:8000"]
+
+  - job_name: "stigmergic-router-2"
+    static_configs:
+      - targets: ["router-2:8000"]

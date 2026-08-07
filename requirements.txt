@@ -10,3 +10,5 @@ redis[hiredis]
 pytest
 pytest-asyncio
 fakeredis
+prometheus_client
+locust

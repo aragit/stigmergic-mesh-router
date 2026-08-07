@@ -18,9 +18,15 @@ import uvicorn
 import yaml
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from prometheus_client import make_asgi_app
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
 
+from api.metrics import (
+    stigmergic_requests_total,
+    stigmergic_request_duration_seconds,
+    update_prometheus_metrics,
+)
 from core.decay_engine import start_decay_engine
 from core.memory_field import (
     BasePheromoneMemoryField,
@@ -98,6 +104,7 @@ class MeshState:
         self.memory_field: Optional[BasePheromoneMemoryField] = None
         self.router: Optional[StigmergicRouterAgent] = None
         self.decay_task: Optional[asyncio.Task] = None
+        self.metrics_task: Optional[asyncio.Task] = None
 
     @property
     def ready(self) -> bool:
@@ -105,6 +112,14 @@ class MeshState:
 
 
 _state = MeshState()
+
+
+async def _metrics_loop() -> None:
+    """Background task that syncs memory field state into Prometheus Gauges."""
+    while True:
+        if _state.memory_field is not None and _state.router is not None:
+            await update_prometheus_metrics(_state.memory_field, _state.router)
+        await asyncio.sleep(1.0)
 
 
 def _create_worker(spec: Dict[str, Any]) -> BaseWorkerNode:
@@ -228,9 +243,19 @@ async def lifespan(app: FastAPI):
         )
     )
 
+    _state.metrics_task = asyncio.create_task(
+        _metrics_loop()
+    )
+
     logger.info("Mesh router started with %d workers: %s", len(node_ids), ", ".join(node_ids))
     yield
 
+    if _state.metrics_task:
+        _state.metrics_task.cancel()
+        try:
+            await _state.metrics_task
+        except asyncio.CancelledError:
+            pass
     if _state.decay_task:
         _state.decay_task.cancel()
         try:
@@ -256,6 +281,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Expose Prometheus metrics at /metrics
+app.mount("/metrics", make_asgi_app())
+
 
 @app.get("/v1/models", response_model=ModelList)
 async def list_models():
@@ -275,12 +303,19 @@ async def completions(request: CompletionRequest):
     if not _state.ready:
         raise HTTPException(status_code=503, detail="Router not initialised")
 
+    start = time.monotonic()
     cap_context = analyze_prompt(request.prompt)
     result = await _state.router.route_and_execute(
         prompt=request.prompt,
         max_tokens=request.max_tokens,
         capability_context=cap_context,
     )
+    duration = time.monotonic() - start
+
+    status = "success" if result.get("success", True) else "error"
+    node_id = result.get("node_id", "unknown")
+    stigmergic_requests_total.labels(node_id=node_id, status=status).inc()
+    stigmergic_request_duration_seconds.labels(node_id=node_id).observe(duration)
 
     now = int(time.time())
     completion_text = result.get("text", f"[Response from {result['node_id']}]")
@@ -322,6 +357,7 @@ async def chat_completions(request: ChatCompletionRequest):
     if not _state.ready:
         raise HTTPException(status_code=503, detail="Router not initialised")
 
+    start = time.monotonic()
     prompt = _messages_to_prompt(request.messages)
     cap_context = analyze_prompt(prompt)
 
@@ -330,6 +366,12 @@ async def chat_completions(request: ChatCompletionRequest):
         max_tokens=request.max_tokens,
         capability_context=cap_context,
     )
+    duration = time.monotonic() - start
+
+    status = "success" if result.get("success", True) else "error"
+    node_id = result.get("node_id", "unknown")
+    stigmergic_requests_total.labels(node_id=node_id, status=status).inc()
+    stigmergic_request_duration_seconds.labels(node_id=node_id).observe(duration)
 
     now = int(time.time())
     content = result.get("text", f"[Response from {result['node_id']}]")

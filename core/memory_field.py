@@ -371,13 +371,15 @@ class RedisPheromoneMemoryField(BasePheromoneMemoryField):
             self._initialized = True
 
     async def get_state_vector(self) -> np.ndarray:
-        """Read all node states from Redis and apply lazy decay.
+        """Read all node states from Redis without additional decay.
 
         Returns a ``(N_nodes, 4)`` NumPy array with columns [V, L, S, C].
+        Values are read at face value — all decay is handled by the
+        background decay engine (:func:`start_decay_engine`) via
+        :meth:`apply_evaporation`, consistent with the in-memory backend.
         """
         await self._ensure_initialized()
 
-        now = time.time()
         pipe = self._redis.pipeline()
         for nid in self.node_ids:
             pipe.hgetall(self._key(nid))
@@ -390,19 +392,6 @@ class RedisPheromoneMemoryField(BasePheromoneMemoryField):
             l = float(raw.get(b"L", 0.1) or 0.1)
             s = float(raw.get(b"S", 0.0) or 0.0)
             c = float(raw.get(b"C", 1.0) or 1.0)
-            ts = float(raw.get(b"ts", now) or now)
-
-            elapsed = now - ts
-            steps = elapsed / self._decay_interval_sec
-            if steps > 0:
-                factor = (1.0 - self._decay_rate) ** steps
-                if self.decay_success:
-                    v *= factor
-                l *= factor
-                s *= factor
-                if self.decay_capability:
-                    c *= factor
-
             state[i] = [v, l, s, c]
 
         return state
@@ -449,12 +438,17 @@ class RedisPheromoneMemoryField(BasePheromoneMemoryField):
 
         V decays only if ``decay_success`` is *True*.
         C decays only if ``decay_capability`` is *True*.
+
+        Updates the ``ts`` field for each node so that subsequent
+        :meth:`get_state_vector` lazy-decay calculations start from
+        the correct baseline, preventing double-decay.
         """
         if not 0.0 <= decay_rate < 1.0:
             raise ValueError("decay_rate must be in [0, 1)")
         await self._ensure_initialized()
 
         factor = 1.0 - decay_rate
+        now = time.time()
 
         pipe = self._redis.pipeline()
         for nid in self.node_ids:
@@ -463,7 +457,7 @@ class RedisPheromoneMemoryField(BasePheromoneMemoryField):
 
         pipe2 = self._redis.pipeline()
         for nid, raw in zip(self.node_ids, raw_results):
-            updates: Dict[str, Any] = {}
+            updates: Dict[str, Any] = {"ts": now}
             if self.decay_success:
                 updates["V"] = float(raw.get(b"V", 1.0) or 1.0) * factor
             updates["L"] = float(raw.get(b"L", 0.1) or 0.1) * factor
