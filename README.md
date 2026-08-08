@@ -39,7 +39,7 @@ Rather than relying on rigid, top‑down load-balancing rules, the mesh achieves
 ## 🏗️ Complete End-to-End Architecture
 
 <p align="center">
-  <img src="assets/dig2.png" alt="Complete End-to-End Architecture diagram" width="800" />
+  <img src="assets/dig2.png" alt="Complete End-to-End Architecture diagram" width="480" />
 </p>
 
 ## Implementation Map (Phases 1-13)
