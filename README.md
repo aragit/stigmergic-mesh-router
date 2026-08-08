@@ -401,3 +401,10 @@ stigmergic-mesh-router/
 ├── tests/                     # Unit + E2E chaos test suite
 └── benchmarks/                # Failover & capability-routing benchmarks
 ```
+
+---
+
+## 📄 License & Contributing
+
+- **License**: This project is licensed under the terms of the [Apache License 2.0](LICENSE).
+- **Contributing**: Please review our [Contributing Guidelines](CONTRIBUTING.md) before submitting pull requests or opening issues.
