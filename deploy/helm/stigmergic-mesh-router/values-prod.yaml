@@ -1,0 +1,51 @@
+# Production hardening profile for stigmergic-mesh-router.
+# Consumes Phase 11 (security) and Phase 12 (checkpointing) feature flags and
+# pins production-grade autoscaling, resource, and disruption budgets.
+
+replicaCount: 3
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 75
+  targetMemoryUtilizationPercentage: 80
+  customMetrics:
+    entropyRateTarget: "150m"
+    activeRoutesTarget: "500"
+
+# Ingress governance / authN (Phase 11).
+security:
+  enabled: true
+  defaultTenantKeys:
+    - tenant_id: "tenant-prod"
+      key_hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      tier: "enterprise"
+      rpm_limit: 1000
+      tpm_limit: 200000
+      priority_weight: 1.0
+
+# Mesh state persistence (Phase 12). Redis (shared) drives cross-pod warm-start;
+# the emptyDir volume mirrors snapshots to local disk as a backup store.
+checkpoints:
+  enabled: true
+  interval: 30
+  storagePath: "/var/lib/stigmergic/checkpoints"
+  redisUrl: "redis://stigmergic-redis:6379/0"
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+# KEDA ScaledObject is opt-in (disabled by default); the standard v2 HPA is the
+# primary autoscaler. Enabling KEDA swaps the custom-metrics backend.
+keda:
+  enabled: false

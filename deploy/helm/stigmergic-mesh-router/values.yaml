@@ -75,3 +75,13 @@ affinity:
             matchLabels:
               app.kubernetes.io/name: stigmergic-mesh-router
           topologyKey: kubernetes.io/hostname
+
+security:
+  enabled: true
+  defaultTenantKeys:
+    - tenant_id: "tenant-default"
+      key_hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      tier: "pro"
+      rpm_limit: 600
+      tpm_limit: 100000
+      priority_weight: 1.0

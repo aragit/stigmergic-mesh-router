@@ -1,0 +1,21 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "stigmergic-mesh-router.fullname" . }}
+  labels:
+    {{- include "stigmergic-mesh-router.labels" . | nindent 4 }}
+spec:
+  {{- with .Values.podDisruptionBudget }}
+  {{- if .minAvailable }}
+  minAvailable: {{ .minAvailable }}
+  {{- else if .maxUnavailable }}
+  maxUnavailable: {{ .maxUnavailable }}
+  {{- else }}
+  minAvailable: 1
+  {{- end }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "stigmergic-mesh-router.selectorLabels" . | nindent 6 }}
+{{- end }}

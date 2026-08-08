@@ -1,0 +1,39 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: stigmergic-mesh-router
+  namespace: argocd
+  labels:
+    stigmergic.io/managed-by: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - env: staging
+            namespace: stigmergic-mesh-staging
+            valueFile: values-staging.yaml
+          - env: production
+            namespace: stigmergic-mesh
+            valueFile: values-prod.yaml
+  template:
+    metadata:
+      labels:
+        stigmergic.io/env: "{{env}}"
+    spec:
+      project: default
+      source:
+        repoURL: "https://github.com/aragit/stigmergic-mesh-router.git"
+        targetRevision: HEAD
+        path: deploy/helm/stigmergic-mesh-router
+        helm:
+          valueFiles:
+            - "{{valueFile}}"
+      destination:
+        server: "https://kubernetes.default.svc"
+        namespace: "{{namespace}}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true

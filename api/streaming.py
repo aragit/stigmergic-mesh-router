@@ -27,6 +27,7 @@ async def stream_chat_completion(
     max_tokens: int,
     capability_context: Optional[Dict[str, float]] = None,
     capability_match: float = 0.5,
+    weights_override: Optional[Dict[str, float]] = None,
 ) -> AsyncGenerator[str, None]:
     """Stream a chat completion response as SSE chunks.
 
@@ -35,7 +36,7 @@ async def stream_chat_completion(
     TTFT into the node's Latency Trace (L).  After each batch of tokens,
     deposits token velocity into the Success Trace (V).
     """
-    worker = await router.sample_worker(capability_context)
+    worker = await router.sample_worker(capability_context, weights_override)
 
     try:
         stream = worker.execute_streaming(prompt, max_tokens)
@@ -108,13 +109,14 @@ async def stream_completion(
     max_tokens: int,
     capability_context: Optional[Dict[str, float]] = None,
     capability_match: float = 0.5,
+    weights_override: Optional[Dict[str, float]] = None,
 ) -> AsyncGenerator[str, None]:
     """Stream a completion response as SSE chunks.
 
     Same as :func:`stream_chat_completion` but uses the OpenAI
     completion SSE format (``text`` field instead of ``content``).
     """
-    worker = await router.sample_worker(capability_context)
+    worker = await router.sample_worker(capability_context, weights_override)
 
     try:
         stream = worker.execute_streaming(prompt, max_tokens)

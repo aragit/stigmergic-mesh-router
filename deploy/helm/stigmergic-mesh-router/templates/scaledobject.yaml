@@ -1,0 +1,30 @@
+{{- if .Values.keda.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "stigmergic-mesh-router.fullname" . }}
+  labels:
+    {{- include "stigmergic-mesh-router.labels" . | nindent 4 }}
+  annotations:
+    scaledobject.keda.sh/transfer-hpa-ownership: "true"
+spec:
+  scaleTargetRef:
+    name: {{ include "stigmergic-mesh-router.fullname" . }}
+  minReplicaCount: {{ .Values.autoscaling.minReplicas }}
+  maxReplicaCount: {{ .Values.autoscaling.maxReplicas }}
+  pollingInterval: 30
+  cooldownPeriod: 300
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: {{ .Values.prometheusAdapter.prometheusUrl | quote }}
+        metricName: stigmergic_requests_per_second
+        threshold: "150"
+        query: sum(rate(stigmergic_requests_total[1m])) by (node_id)
+    - type: prometheus
+      metadata:
+        serverAddress: {{ .Values.prometheusAdapter.prometheusUrl | quote }}
+        metricName: stigmergic_entropy_rate
+        threshold: "150m"
+        query: stigmergic_entropy_rate_total
+{{- end }}

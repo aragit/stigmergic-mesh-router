@@ -46,6 +46,23 @@ spec:
               value: "redis://stigmergic-redis:6379/0"
             - name: STIGMERGIC_WORKERS_JSON
               value: '[]'
+            {{- if .Values.security.enabled }}
+            - name: STIGMERGIC_SECURITY_ENABLED
+              value: "true"
+            - name: STIGMERGIC_DEFAULT_TENANT_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "stigmergic-mesh-router.fullname" . }}-secret
+                  key: tenant-keys
+            {{- end }}
+            {{- if .Values.checkpoints.enabled }}
+            - name: STIGMERGIC_CHECKPOINTS_ENABLED
+              value: "true"
+            - name: STIGMERGIC_CHECKPOINT_INTERVAL
+              value: "{{ .Values.checkpoints.interval }}"
+            - name: STIGMERGIC_CHECKPOINT_STORAGE_PATH
+              value: "{{ .Values.checkpoints.storagePath }}"
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
@@ -60,6 +77,16 @@ spec:
             periodSeconds: 5
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.checkpoints.enabled }}
+          volumeMounts:
+            - name: checkpoint-store
+              mountPath: {{ .Values.checkpoints.storagePath }}
+          {{- end }}
+      {{- if .Values.checkpoints.enabled }}
+      volumes:
+        - name: checkpoint-store
+          emptyDir: {}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

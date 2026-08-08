@@ -1,0 +1,34 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: stigmergic-mesh-router
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argoproj.io
+  labels:
+    stigmergic.io/env: production
+spec:
+  project: default
+  source:
+    repoURL: "https://github.com/aragit/stigmergic-mesh-router.git"
+    targetRevision: HEAD
+    path: deploy/helm/stigmergic-mesh-router
+    helm:
+      valueFiles:
+        - values-prod.yaml
+  destination:
+    server: "https://kubernetes.default.svc"
+    namespace: stigmergic-mesh
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 3
+      backoff:
+        duration: 15s
+        factor: 3
+        maxDuration: 5m
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=background

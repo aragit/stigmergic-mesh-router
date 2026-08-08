@@ -80,6 +80,44 @@ stigmergic_entropy_rate_total = Counter(
     "Cumulative stigmergic entropy decay events — drives HPA scaling",
 )
 
+stigmergic_auth_failures_total = Counter(
+    "stigmergic_auth_failures_total",
+    "Total count of unauthorized request attempts",
+    ["reason"],
+)
+
+stigmergic_rate_limit_exceeded_total = Counter(
+    "stigmergic_rate_limit_exceeded_total",
+    "Total count of requests rejected due to rate limits",
+    ["tenant_id", "dimension"],
+)
+
+stigmergic_checkpoints_created_total = Counter(
+    "stigmergic_checkpoints_created_total",
+    "Total count of matrix snapshots successfully saved",
+    ["storage_type"],  # "redis" or "disk"
+)
+
+stigmergic_checkpoint_restore_status = Gauge(
+    "stigmergic_checkpoint_restore_status",
+    "1 if matrix successfully hydrated on boot, 0 if cold-started",
+)
+
+
+def get_total_routed_requests() -> int:
+    """Return the cumulative number of routed requests across all labels.
+
+    Best-effort: the underlying Counter is labeled, so we sum every child
+    value.  Any access error yields ``0``.
+    """
+    try:
+        total = 0
+        for child in stigmergic_requests_total._metrics.values():
+            total += int(child._value.get())
+        return total
+    except Exception:
+        return 0
+
 agent_active_mesh_routes = Gauge(
     "agent_active_mesh_routes",
     "Current count of active mesh routing slots per agent/pod",

@@ -92,6 +92,16 @@ class BasePheromoneMemoryField(ABC):
         """Apply multiplicative evaporation to every trace."""
         ...
 
+    @abstractmethod
+    async def hydrate_from_snapshot(self, snapshot: Any) -> int:
+        """Restore V/L/S/C traces for known nodes from a checkpoint snapshot."""
+        ...
+
+    @abstractmethod
+    async def export_state_dict(self) -> Dict[str, Dict[str, float]]:
+        """Return a copy of every node's V/L/S/C traces."""
+        ...
+
 
 class InMemoryPheromoneMemoryField(BasePheromoneMemoryField):
     """Lock-guarded in-memory pheromone field backed by a NumPy array.
@@ -243,6 +253,47 @@ class InMemoryPheromoneMemoryField(BasePheromoneMemoryField):
                 nid: i for i, nid in enumerate(self.node_ids)
             }
             self._state = np.delete(self._state, idx, axis=0)
+
+    async def hydrate_from_snapshot(self, snapshot: Any) -> int:
+        """Overwrite V/L/S/C traces for known nodes from a checkpoint snapshot.
+
+        Returns the number of nodes whose rows were updated.  Nodes present
+        in *snapshot* but not in this field are skipped; field nodes absent
+        from *snapshot* retain their current baseline values.
+
+        ``snapshot`` may be a :class:`~core.checkpointing.MatrixSnapshot` or
+        a plain dict with a ``node_metrics`` mapping.
+        """
+        node_metrics = getattr(snapshot, "node_metrics", None) or snapshot.get("node_metrics", {})
+        updated = 0
+        async with self._lock:
+            for nid, traces in node_metrics.items():
+                idx = self._node_index.get(nid)
+                if idx is None:
+                    continue
+                if "V" in traces:
+                    self._state[idx, 0] = float(traces["V"])
+                if "L" in traces:
+                    self._state[idx, 1] = float(traces["L"])
+                if "S" in traces:
+                    self._state[idx, 2] = float(traces["S"])
+                if "C" in traces:
+                    self._state[idx, 3] = float(traces["C"])
+                updated += 1
+        return updated
+
+    async def export_state_dict(self) -> Dict[str, Dict[str, float]]:
+        """Return a thread-safe copy of every node's V/L/S/C traces."""
+        async with self._lock:
+            return {
+                nid: {
+                    "V": float(self._state[i, 0]),
+                    "L": float(self._state[i, 1]),
+                    "S": float(self._state[i, 2]),
+                    "C": float(self._state[i, 3]),
+                }
+                for i, nid in enumerate(self.node_ids)
+            }
 
 
 class RedisPheromoneMemoryField(BasePheromoneMemoryField):
@@ -523,6 +574,55 @@ class RedisPheromoneMemoryField(BasePheromoneMemoryField):
         self._node_index = {
             nid: i for i, nid in enumerate(self.node_ids)
         }
+
+    async def hydrate_from_snapshot(self, snapshot: Any) -> int:
+        """Overwrite V/L/S/C traces for known nodes from a checkpoint.
+
+        Returns the number of nodes whose Redis hashes were written.
+        """
+        await self._ensure_initialized()
+        node_metrics = getattr(snapshot, "node_metrics", None) or snapshot.get("node_metrics", {})
+        if not node_metrics:
+            return 0
+        now = time.time()
+        pipe = self._redis.pipeline()
+        updated = 0
+        for nid, traces in node_metrics.items():
+            if nid not in self._node_index:
+                continue
+            mapping = {}
+            if "V" in traces:
+                mapping["V"] = float(traces["V"])
+            if "L" in traces:
+                mapping["L"] = float(traces["L"])
+            if "S" in traces:
+                mapping["S"] = float(traces["S"])
+            if "C" in traces:
+                mapping["C"] = float(traces["C"])
+            if mapping:
+                mapping["ts"] = now
+                pipe.hset(self._key(nid), mapping=mapping)
+                updated += 1
+        if updated:
+            await pipe.execute()
+        return updated
+
+    async def export_state_dict(self) -> Dict[str, Dict[str, float]]:
+        """Return a copy of every node's V/L/S/C traces from Redis."""
+        await self._ensure_initialized()
+        pipe = self._redis.pipeline()
+        for nid in self.node_ids:
+            pipe.hgetall(self._key(nid))
+        raw_results = await pipe.execute()
+        state: Dict[str, Dict[str, float]] = {}
+        for nid, raw in zip(self.node_ids, raw_results):
+            state[nid] = {
+                "V": float(raw.get(b"V", 1.0) or 1.0),
+                "L": float(raw.get(b"L", 0.1) or 0.1),
+                "S": float(raw.get(b"S", 0.0) or 0.0),
+                "C": float(raw.get(b"C", 1.0) or 1.0),
+            }
+        return state
 
     async def close(self) -> None:
         """Close the Redis connection pool."""

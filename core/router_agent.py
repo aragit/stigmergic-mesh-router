@@ -70,25 +70,40 @@ class StigmergicRouterAgent:
         self.temperature: float = temperature
         self.rng: np.random.Generator = rng or np.random.default_rng()
 
-    def compute_scores(self, state: np.ndarray) -> np.ndarray:
+    def compute_scores(
+        self,
+        state: np.ndarray,
+        weights_override: Optional[Dict[str, float]] = None,
+    ) -> np.ndarray:
         """Compute attraction scores for all nodes from the 4D state matrix.
 
         Parameters
         ----------
         state
             ``(N_nodes, 4)`` matrix with columns ``[V, L, S, C]``.
+        weights_override
+            Optional per-call weight overrides (e.g. from tenant governance).
+            When a key (``alpha``/``beta``/``gamma``/``delta``) is present it
+            takes precedence over the router's configured weight for this
+            computation only.
 
         Returns
         -------
         np.ndarray
             1-D array of shape ``(N_nodes,)`` with attraction scores.
         """
+        if weights_override is None:
+            weights_override = {}
+        alpha = float(weights_override.get("alpha", self.alpha))
+        beta = float(weights_override.get("beta", self.beta))
+        gamma = float(weights_override.get("gamma", self.gamma))
+        delta = float(weights_override.get("delta", self.delta))
         v = state[:, 0]
-        l = state[:, 1]
-        s = state[:, 2]
-        c = state[:, 3] if state.shape[1] >= 4 else np.zeros_like(v)
-        return (self.alpha * v + self.delta * c + self._EPS) / (
-            self.beta * l + self.gamma * s + self._EPS
+        latency = state[:, 1]
+        saturation = state[:, 2]
+        capability = state[:, 3] if state.shape[1] >= 4 else np.zeros_like(v)
+        return (alpha * v + delta * capability + self._EPS) / (
+            beta * latency + gamma * saturation + self._EPS
         )
 
     def compute_capability_match(
@@ -146,6 +161,7 @@ class StigmergicRouterAgent:
     async def sample_worker(
         self,
         capability_context: Optional[Dict[str, float]] = None,
+        weights_override: Optional[Dict[str, float]] = None,
     ) -> BaseWorkerNode:
         """Sample a worker node according to stigmergic pheromone probabilities.
 
@@ -158,14 +174,12 @@ class StigmergicRouterAgent:
             Optional mapping of capability tags to importance weights.
             When provided, the scores are adjusted on-the-fly by boosting
             nodes whose tags match the context.
-
-        Returns
-        -------
-        BaseWorkerNode
-            The selected worker node.
+        weights_override
+            Optional per-call 4D weight overrides (e.g. from tenant
+            governance) threaded into :meth:`compute_scores`.
         """
         state = await self.memory_field.get_state_vector()
-        scores = self.compute_scores(state)
+        scores = self.compute_scores(state, weights_override=weights_override)
 
         if capability_context:
             boosts = np.array(
@@ -187,11 +201,12 @@ class StigmergicRouterAgent:
         prompt: str,
         max_tokens: int = 128,
         capability_context: Optional[Dict[str, float]] = None,
+        weights_override: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """Route a single inference request through the stigmergic mechanism.
 
         1. Sample a worker based on current pheromone state and optional
-           capability context.
+           capability context / weight overrides.
         2. Execute inference on the selected worker.
         3. Compute capability match and deposit a trace into the memory
            field so that future routing decisions are influenced by
@@ -205,6 +220,9 @@ class StigmergicRouterAgent:
             Maximum tokens to generate.
         capability_context
             Optional mapping of capability tags to importance weights.
+        weights_override
+            Optional per-call 4D weight overrides (e.g. from tenant
+            governance).
 
         Returns
         -------
@@ -212,7 +230,7 @@ class StigmergicRouterAgent:
             The inference result enriched with ``routed_to`` (the node_id
             that handled the request).
         """
-        worker = await self.sample_worker(capability_context)
+        worker = await self.sample_worker(capability_context, weights_override)
         try:
             result: Dict[str, Any] = await worker.execute_inference(
                 prompt, max_tokens
@@ -243,9 +261,13 @@ class StigmergicRouterAgent:
         prompt: str,
         max_tokens: int = 128,
         capability_context: Optional[Dict[str, float]] = None,
+        weights_override: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """Sample a worker, execute inference, and deposit a trace.
 
-        Alias for :meth:`route` with capability context support.
+        Alias for :meth:`route` with capability context and optional weight
+        override support.
         """
-        return await self.route(prompt, max_tokens, capability_context)
+        return await self.route(
+            prompt, max_tokens, capability_context, weights_override
+        )

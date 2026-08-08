@@ -12,16 +12,23 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import uvicorn
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from prometheus_client import make_asgi_app
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
+from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 
+from api.auth import (
+    TenantContext,
+    get_current_tenant,
+)
+from api.governance import TenantPolicyEngine
+from api.rate_limiter import RedisRateLimiter
 from api.metrics import (
     stigmergic_requests_total,
     stigmergic_request_duration_seconds,
@@ -34,6 +41,7 @@ from core.memory_field import (
     get_memory_field,
 )
 from core.router_agent import StigmergicRouterAgent
+from core.checkpointing import CheckpointManager
 from core.worker_node import (
     BaseWorkerNode,
     CPUMockWorkerNode,
@@ -94,7 +102,65 @@ class ModelList(BaseModel):
     data: List[ModelInfo]
 
 
-# ── Mesh state container ────────────────────────────────────────────────
+# ── Ingress governance helpers (Phase 11) ─────────────────────────────────
+
+def _estimate_prompt_tokens(prompt: str) -> int:
+    """Estimate input-token count for *prompt*.
+
+    Mirrors the heuristic already used by the usage reporting in the
+    completion handlers (``len(prompt.split())``) so the TPM quota is
+    charged consistently with what clients see reported.
+    """
+    return len(prompt.split())
+
+
+def _rate_limit_headers(info: Dict[str, Any]) -> Dict[str, str]:
+    """Derive ``X-RateLimit-*`` headers from a rate-limit *info* dict."""
+    return {
+        "X-RateLimit-Limit": str(int(info["limit"])),
+        "X-RateLimit-Remaining": str(max(0, int(info["remaining"]))),
+        "X-RateLimit-Reset": str(int(info["reset"])),
+    }
+
+
+def _governed_weights(tenant: TenantContext) -> Optional[Dict[str, float]]:
+    """Return governance-biased matrix weights for *tenant*, or ``None``.
+
+    When no policy engine is configured (security disabled) this returns
+    ``None`` so the router falls back to its own defaults.
+    """
+    if _state.policy_engine is None or _state.router is None:
+        return None
+    base = {
+        "alpha": _state.router.alpha,
+        "beta": _state.router.beta,
+        "gamma": _state.router.gamma,
+        "delta": _state.router.delta,
+    }
+    return _state.policy_engine.apply_governance_bias(tenant, base)
+
+
+async def _check_rate_and_headers(
+    tenant: TenantContext,
+    prompt: str,
+    max_tokens: int,
+) -> Tuple[Dict[str, str], bool]:
+    """Evaluate RPM/TPM quotas and build ``X-RateLimit-*`` headers.
+
+    Returns ``(headers, allowed)``.  When rate limiting is unconfigured
+    (no Redis / security disabled) the headers dict is empty and
+    ``allowed`` is ``True``.
+    """
+    if _state.rate_limiter is None:
+        return {}, True
+    prompt_tokens = _estimate_prompt_tokens(prompt)
+    cost = prompt_tokens + max_tokens
+    allowed, info = await _state.rate_limiter.check_rate_limits(tenant, cost)
+    headers = _rate_limit_headers(info)
+    if not allowed:
+        headers["Retry-After"] = str(int(info["reset"]))
+    return headers, allowed
+
 
 class MeshState:
     """Holds router, workers, and background tasks for the API lifecycle."""
@@ -106,6 +172,14 @@ class MeshState:
         self.router: Optional[StigmergicRouterAgent] = None
         self.decay_task: Optional[asyncio.Task] = None
         self.metrics_task: Optional[asyncio.Task] = None
+        # Phase 11: ingress security / governance components.
+        self.authenticator: Optional[Any] = None
+        self.rate_limiter: Optional[RedisRateLimiter] = None
+        self.policy_engine: Optional[TenantPolicyEngine] = None
+        self.redis_client: Optional[Any] = None
+        # Phase 12: pheromone state checkpointing.
+        self.checkpoint_manager: Optional[Any] = None
+        self.checkpoint_task: Optional[asyncio.Task] = None
 
     @property
     def ready(self) -> bool:
@@ -204,7 +278,7 @@ async def lifespan(app: FastAPI):
     with open(CONFIG_PATH, "r") as f:
         _state.config = yaml.safe_load(f)
 
-    # Allow environment variable overrides for container deployments
+     # Allow environment variable overrides for container deployments
     env_backend = os.environ.get("STIGMERGIC_STORAGE_BACKEND")
     if env_backend:
         _state.config["storage_backend"] = env_backend
@@ -212,6 +286,37 @@ async def lifespan(app: FastAPI):
     if env_host:
         redis_cfg = _state.config.setdefault("redis", {})
         redis_cfg["host"] = env_host
+
+    # Phase 11: ingress security overrides for container deployments.
+    sec_cfg = _state.config.setdefault("security", {})
+    env_security = os.environ.get("STIGMERGIC_SECURITY_ENABLED")
+    if env_security is not None:
+        sec_cfg["enabled"] = env_security.lower() in ("1", "true", "yes")
+    env_tenant_keys = os.environ.get("STIGMERGIC_DEFAULT_TENANT_KEYS")
+    if env_tenant_keys:
+        try:
+            import json as _json
+
+            sec_cfg["defaultTenantKeys"] = _json.loads(env_tenant_keys)
+        except (ValueError, TypeError):
+            logger.warning("STIGMERGIC_DEFAULT_TENANT_KEYS contained invalid JSON; ignoring")
+
+    # Phase 12: checkpointing overrides for container deployments.  Gated
+    # by ``enabled`` (mirrors the Phase 11 ``security.enabled`` convention)
+    # so local-dev / unit tests cold-start without writing to disk.
+    ckpt_cfg = _state.config.setdefault("checkpoints", {})
+    env_ckpt = os.environ.get("STIGMERGIC_CHECKPOINTS_ENABLED")
+    if env_ckpt is not None:
+        ckpt_cfg["enabled"] = env_ckpt.lower() in ("1", "true", "yes")
+    env_interval = os.environ.get("STIGMERGIC_CHECKPOINT_INTERVAL")
+    if env_interval is not None:
+        try:
+            ckpt_cfg["interval"] = int(env_interval)
+        except ValueError:
+            pass
+    env_storage = os.environ.get("STIGMERGIC_CHECKPOINT_STORAGE_PATH")
+    if env_storage:
+        ckpt_cfg["storage_path"] = env_storage
 
     worker_specs = _state.config.get("server", {}).get("workers", [])
     if not worker_specs:
@@ -248,6 +353,16 @@ async def lifespan(app: FastAPI):
         _metrics_loop()
     )
 
+    # Phase 11: configure tenant authentication, rate limiting, and
+    # governance when security is enabled.  When disabled (local-dev /
+    # test default) the components stay ``None`` and requests flow
+    # through using a permissive default tenant.
+    await _configure_security()
+
+    # Phase 12: hydrate pheromone state from the latest checkpoint (if any)
+    # so freshly-booted / recovered replicas skip cold-start exploration.
+    await _warmup_checkpoint()
+
     logger.info("Mesh router started with %d workers: %s", len(node_ids), ", ".join(node_ids))
     yield
 
@@ -263,7 +378,146 @@ async def lifespan(app: FastAPI):
             await _state.decay_task
         except asyncio.CancelledError:
             pass
+    # Phase 12: capture a final shutdown snapshot before exiting.
+    await _shutdown_checkpoint()
+    if _state.checkpoint_task:
+        _state.checkpoint_task.cancel()
+        try:
+            await _state.checkpoint_task
+        except asyncio.CancelledError:
+            pass
+    if _state.redis_client is not None:
+        try:
+            await _state.redis_client.aclose()
+        except Exception:
+            logger.debug("Redis client close skipped", exc_info=True)
     logger.info("Mesh router shutting down")
+
+
+async def _warmup_checkpoint() -> None:
+    """Hydrate the memory field from the latest checkpoint, if enabled.
+
+    When checkpointing is disabled (the local-dev / test default) this is a
+    no-op that reports a cold start, so existing flows are unaffected.
+    """
+    global _state
+
+    from api.metrics import stigmergic_checkpoint_restore_status
+
+    ckpt_cfg: Dict[str, Any] = _state.config.get("checkpoints", {})
+    if not ckpt_cfg.get("enabled", False):
+        stigmergic_checkpoint_restore_status.set(0)
+        logger.info("Checkpointing disabled — cold-starting with balanced seed weights")
+        return
+
+    cm = CheckpointManager(
+        memory_field=_state.memory_field,
+        redis_client=_state.redis_client,
+        storage_path=ckpt_cfg.get("storage_path", "./data/checkpoints"),
+        router_agent=_state.router,
+    )
+    _state.checkpoint_manager = cm
+
+    snapshot = await cm.load_latest_checkpoint()
+    if snapshot is not None:
+        try:
+            updated = await _state.memory_field.hydrate_from_snapshot(snapshot)
+            stigmergic_checkpoint_restore_status.set(1)
+            logger.info(
+                "Warm-started from checkpoint: hydrated %d nodes (t=%.0f, %d requests)",
+                updated, snapshot.timestamp, snapshot.total_routed_requests,
+            )
+        except Exception as exc:
+            stigmergic_checkpoint_restore_status.set(0)
+            logger.warning("Checkpoint restore failed (cold-starting): %s", exc)
+    else:
+        stigmergic_checkpoint_restore_status.set(0)
+        logger.info("No checkpoint found — cold-starting with balanced seed weights")
+
+    interval = int(ckpt_cfg.get("interval", 60))
+    _state.checkpoint_task = asyncio.create_task(
+        cm.start_periodic_checkpointing(interval_seconds=interval)
+    )
+
+
+async def _shutdown_checkpoint() -> None:
+    """Persist a final snapshot before the process exits."""
+    global _state
+
+    if _state.checkpoint_manager is None or _state.memory_field is None:
+        return
+    try:
+        snapshot = await _state.checkpoint_manager.create_snapshot()
+        await _state.checkpoint_manager.save_checkpoint(snapshot)
+        logger.info("Final checkpoint saved (timestamp=%.0f)", snapshot.timestamp)
+    except Exception as exc:
+        logger.warning("Final checkpoint save failed: %s", exc)
+
+
+def _build_secret_keys_map(
+    raw_keys: list,
+) -> Dict[str, "TenantContext"]:
+    """Translate ``security.defaultTenantKeys`` into a hash -> context map."""
+    mapping: Dict[str, "TenantContext"] = {}
+    for entry in raw_keys or []:
+        key_hash = entry.get("key_hash")
+        if not key_hash:
+            continue
+        mapping[key_hash] = _entry_to_tenant(entry)
+    return mapping
+
+
+def _entry_to_tenant(entry: Dict[str, Any]) -> "TenantContext":
+    return TenantContext(
+        tenant_id=entry.get("tenant_id", "unknown"),
+        tier=entry.get("tier", "pro"),
+        rpm_limit=int(entry.get("rpm_limit", 600)),
+        tpm_limit=int(entry.get("tpm_limit", 100_000)),
+        priority_weight=float(entry.get("priority_weight", 1.0)),
+    )
+
+
+async def _configure_security() -> None:
+    """Initialise authenticator, rate limiter, and policy engine from config."""
+    global _state
+
+    sec_cfg: Dict[str, Any] = _state.config.get("security", {})
+    if not sec_cfg.get("enabled", False):
+        return
+
+    redis_cfg = _state.config.get("redis", {})
+    redis_host = redis_cfg.get("host", "localhost")
+    redis_port = int(redis_cfg.get("port", 6379))
+    redis_db = int(redis_cfg.get("db", 0))
+    redis_password = redis_cfg.get("password")
+
+    try:
+        import redis.asyncio as aioredis
+
+        _state.redis_client = aioredis.Redis(
+            host=redis_host,
+            port=redis_port,
+            db=redis_db,
+            password=redis_password,
+            decode_responses=False,
+        )
+    except ImportError:  # pragma: no cover
+        logger.warning("redis-py not installed; auth will use fallback map only")
+        _state.redis_client = None
+
+    secret_keys_map = _build_secret_keys_map(
+        sec_cfg.get("defaultTenantKeys", [])
+    )
+
+    from api.auth import APIKeyAuthenticator
+
+    _state.authenticator = APIKeyAuthenticator(
+        redis_client=_state.redis_client,
+        secret_keys_map=secret_keys_map,
+    )
+    _state.rate_limiter = RedisRateLimiter(redis_client=_state.redis_client)
+    _state.policy_engine = TenantPolicyEngine()
+    logger.info("Security enabled: %d default tenant keys configured", len(secret_keys_map))
 
 
 # ── FastAPI application ─────────────────────────────────────────────────
@@ -286,7 +540,8 @@ app.add_middleware(
 app.mount("/metrics", make_asgi_app())
 
 
-@app.get("/v1/models", response_model=ModelList)
+@app.get("/v1/models", response_model=ModelList,
+         dependencies=[Depends(get_current_tenant)])
 async def list_models():
     """Return available models (the mesh and individual nodes)."""
     data: List[ModelInfo] = [
@@ -299,14 +554,27 @@ async def list_models():
 
 
 @app.post("/v1/completions")
-async def completions(request: CompletionRequest):
+async def completions(
+    request: CompletionRequest,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
     """Route a completion-style request through the mesh."""
     if not _state.ready:
         raise HTTPException(status_code=503, detail="Router not initialised")
 
+    base_weights = _governed_weights(tenant)
     cap_context = analyze_prompt(request.prompt)
 
     if request.stream:
+        rate_headers, allowed = await _check_rate_and_headers(
+            tenant, request.prompt, request.max_tokens
+        )
+        if not allowed:
+            return JSONResponse(
+                status_code=HTTP_429_TOO_MANY_REQUESTS,
+                content={"detail": "Rate limit exceeded"},
+                headers=rate_headers,
+            )
         return StreamingResponse(
             media_type="text/event-stream",
             content=stream_completion(
@@ -316,14 +584,26 @@ async def completions(request: CompletionRequest):
                 max_tokens=request.max_tokens,
                 capability_context=cap_context,
                 capability_match=0.5,
+                weights_override=base_weights,
             ),
+            headers=rate_headers,
         )
 
     start = time.monotonic()
+    rate_headers, allowed = await _check_rate_and_headers(
+        tenant, request.prompt, request.max_tokens
+    )
+    if not allowed:
+        return JSONResponse(
+            status_code=HTTP_429_TOO_MANY_REQUESTS,
+            content={"detail": "Rate limit exceeded"},
+            headers=rate_headers,
+        )
     result = await _state.router.route_and_execute(
         prompt=request.prompt,
         max_tokens=request.max_tokens,
         capability_context=cap_context,
+        weights_override=base_weights,
     )
     duration = time.monotonic() - start
 
@@ -353,7 +633,8 @@ async def completions(request: CompletionRequest):
                 "completion_tokens": result.get("tokens", 0),
                 "total_tokens": len(request.prompt.split()) + result.get("tokens", 0),
             },
-        }
+        },
+        headers=rate_headers,
     )
 
 
@@ -367,33 +648,52 @@ def _messages_to_prompt(messages: List[ChatMessage]) -> str:
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: ChatCompletionRequest):
+async def chat_completions(
+    request: ChatCompletionRequest,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
     """Route a chat-style request through the mesh."""
     if not _state.ready:
         raise HTTPException(status_code=503, detail="Router not initialised")
 
+    base_weights = _governed_weights(tenant)
+
     prompt = _messages_to_prompt(request.messages)
     cap_context = analyze_prompt(prompt)
 
+    rate_headers, allowed = await _check_rate_and_headers(
+        tenant, prompt, request.max_tokens
+    )
+    if not allowed:
+        return JSONResponse(
+            status_code=HTTP_429_TOO_MANY_REQUESTS,
+            content={"detail": "Rate limit exceeded"},
+            headers=rate_headers,
+        )
+
     if request.stream:
+        stream_kwargs: Dict[str, Any] = dict(
+            router=_state.router,
+            memory_field=_state.memory_field,
+            prompt=prompt,
+            max_tokens=request.max_tokens,
+            capability_context=cap_context,
+            capability_match=0.5,
+        )
+        if base_weights is not None:
+            stream_kwargs["weights_override"] = base_weights
         return StreamingResponse(
             media_type="text/event-stream",
-            content=stream_chat_completion(
-                router=_state.router,
-                memory_field=_state.memory_field,
-                prompt=prompt,
-                max_tokens=request.max_tokens,
-                capability_context=cap_context,
-                capability_match=0.5,
-            ),
+            content=stream_chat_completion(**stream_kwargs),
+            headers=rate_headers,
         )
 
     start = time.monotonic()
-
     result = await _state.router.route_and_execute(
         prompt=prompt,
         max_tokens=request.max_tokens,
         capability_context=cap_context,
+        weights_override=base_weights,
     )
     duration = time.monotonic() - start
 
@@ -423,7 +723,8 @@ async def chat_completions(request: ChatCompletionRequest):
                 "completion_tokens": result.get("tokens", 0),
                 "total_tokens": len(prompt.split()) + result.get("tokens", 0),
             },
-        }
+        },
+        headers=rate_headers,
     )
 
 
