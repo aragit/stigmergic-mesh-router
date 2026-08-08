@@ -2,7 +2,7 @@ apiVersion: v2
 name: stigmergic-mesh-router
 description: Production Helm chart for Stigmergic Mesh Router microservices with custom metric HPA
 type: application
-version: 0.13.0
+version: 1.3.0
 appVersion: "1.3.0"
 keywords:
   - stigmergic
