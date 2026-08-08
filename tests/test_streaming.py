@@ -151,7 +151,7 @@ async def test_stream_error_handling(streaming_setup):
     """Streaming should handle worker errors gracefully and emit [DONE]."""
     memory_field, router = streaming_setup
 
-    from unittest.mock import AsyncMock, patch
+    from unittest.mock import AsyncMock
 
     # Create a worker that raises an error
     bad_worker = CPUMockWorkerNode(node_id="bad-node")

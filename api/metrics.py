@@ -10,7 +10,7 @@ pheromone values when scraped.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 import numpy as np
 from prometheus_client import (

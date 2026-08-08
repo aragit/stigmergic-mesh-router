@@ -30,7 +30,6 @@ from typing import Dict, List
 
 import fakeredis.aioredis
 import numpy as np
-import rich
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -184,7 +183,7 @@ async def run_benchmark() -> None:
     for nid in node_ids:
         count = served_counter[nid]
         pct = count / total * 100 if total > 0 else 0.0
-        avg_lat = (
+        (
             sum(workers[nid]._lock.__class__.__name__ for _ in range(0))
         )
         # Calculate avg latency from state matrix instead
@@ -273,7 +272,7 @@ async def run_benchmark() -> None:
     if not np.any(np.isnan(state)):
         console.print("[green]✓ PASS: No NaN values in state matrix (atomic writes intact)[/green]")
     else:
-        console.print(f"[red]✗ FAIL: NaN values detected in state matrix[/red]")
+        console.print("[red]✗ FAIL: NaN values detected in state matrix[/red]")
         passed = False
 
     await memory_field.close()

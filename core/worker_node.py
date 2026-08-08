@@ -208,7 +208,7 @@ class CPUMockWorkerNode(BaseWorkerNode):
             for i in range(total_tokens - 1):
                 chunk_start = time.monotonic()
                 await asyncio.sleep(remaining_delay / max(1, total_tokens - 1))
-                chunk_elapsed = time.monotonic() - chunk_start
+                time.monotonic() - chunk_start
                 tokens_sent += 1
                 yield {
                     "chunk_text": f"Token {tokens_sent}\n",

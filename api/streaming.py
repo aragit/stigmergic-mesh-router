@@ -42,7 +42,6 @@ async def stream_chat_completion(
         stream = worker.execute_streaming(prompt, max_tokens)
         chunk_count = 0
         ttft_deposited = False
-        first_token_time: Optional[float] = None
 
         async for chunk in stream:
             yield _sse_line({
@@ -66,7 +65,6 @@ async def stream_chat_completion(
             tokens = chunk.get("token_count", 0)
 
             if is_first and not ttft_deposited:
-                first_token_time = elapsed
                 await memory_field.deposit_trace(
                     node_id=worker.node_id,
                     latency_sec=elapsed,
@@ -79,7 +77,7 @@ async def stream_chat_completion(
 
             if elapsed > 0 and tokens > 0:
                 velocity = tokens / elapsed
-                v_boost = min(1.0, velocity / 50.0)
+                min(1.0, velocity / 50.0)
                 await memory_field.deposit_trace(
                     node_id=worker.node_id,
                     latency_sec=elapsed,

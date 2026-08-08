@@ -1,0 +1,15 @@
+target-version = "py310"
+line-length = 88
+
+[lint]
+# Match ruff's default rule set (E4, E7, E9, F) so CI stays aligned with
+# the project's existing lint posture without enabling new categories.
+select = ["E4", "E7", "E9", "F"]
+# E741: ambiguous variable name ('l'). The existing pheromone-trace loops
+# use `l` by convention; keep stable rather than risk a behavioral rename.
+ignore = ["E741"]
+
+[lint.per-file-ignores]
+# Tests deliberately manipulate sys.path before importing the project, which
+# triggers E402 (module import not at top of file).
+"tests/*" = ["E402"]

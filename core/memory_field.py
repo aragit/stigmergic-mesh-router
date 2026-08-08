@@ -33,7 +33,6 @@ Extended attraction score::
 """
 
 import asyncio
-import json
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
@@ -492,7 +491,7 @@ class RedisPheromoneMemoryField(BasePheromoneMemoryField):
         """
         await self._ensure_initialized()
 
-        idx = self._index_of(node_id)
+        self._index_of(node_id)
         success_val = 1.0 if success else 0.0
         saturated_load = float(active_load) * self.saturation_scale
         cap = max(0.0, min(1.0, float(capability_match)))

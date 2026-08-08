@@ -28,7 +28,6 @@ import time
 
 from locust import (
     HttpUser,
-    constant_pacing,
     events,
     task,
     between,

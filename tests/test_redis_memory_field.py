@@ -6,7 +6,6 @@ without requiring a live Redis server, using ``fakeredis.aioredis``.
 
 import asyncio
 import math
-import time
 
 import fakeredis.aioredis
 import numpy as np

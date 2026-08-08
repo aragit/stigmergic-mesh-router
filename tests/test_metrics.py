@@ -8,7 +8,6 @@ Verifies that:
 * Duration histograms are observed.
 """
 
-import asyncio
 import os
 import yaml
 from pathlib import Path
@@ -93,8 +92,7 @@ def test_routing_increments_request_counter(client):
     """After routing a request, stigmergic_requests_total should show a
     non-zero count for at least one node_id."""
     # First, capture the metrics before routing
-    resp_before = client.get("/metrics")
-    text_before = resp_before.text
+    client.get("/metrics")
 
     # Send a chat completion request
     resp = client.post(

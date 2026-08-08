@@ -7,7 +7,6 @@ Tests use ``fakeredis.aioredis`` to verify:
 """
 
 import asyncio
-import time
 
 import fakeredis.aioredis
 import numpy as np
