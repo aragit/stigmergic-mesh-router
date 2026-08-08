@@ -1,335 +1,369 @@
 # Stigmergic Mesh Router
 
-A decentralized, hardware-agnostic LLM and microservice load router powered by classical stigmergy. Instead of relying on a centralized orchestrator, health-check probe, or traditional load balancer, stigmergic-mesh-router routes incoming requests dynamically based on continuous scalar traces (pheromones) deposited by autonomous router agents into a shared memory substrate.
+An enterprise-grade, neuro-symbolic **4D pheromone-based dynamic LLM routing engine**. The stigmergic-mesh-router dynamically evaluates model backends across Velocity ($V$), Latency ($L$), Stability ($S$), and Cost ($C$), executing real-time softmax candidate path selection with adaptive feedback decay, multi-tenant ingress governance, persistent state checkpointing, and GitOps orchestration.
 
-## Architectural Blueprint
+## Architectural Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                          INGRESS API LAYER (FastAPI)                            │
-│                  Exposes OpenAI-compatible endpoints (/v1/...)                  │
-└───────────────────────────────────────┬─────────────────────────────────────────┘
-                                        │
-                                        v
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                     STATELESS STIGMERGIC ROUTER AGENT POOL                      │
-│   1. Read Pheromone Matrix from Memory Field                                   │
-│   2. Compute Attraction Score per Node via Weighted Formula                     │
-│   3. Perform Softmax Sampling over Scores to pick Node                          │
-│   4. Dispatch Request & Deposit Post-Execution Feedback                         │
-└───────────────────┬─────────────────────────────────────────┬───────────────────┘
-                    │                                         │
-                    ▼ (Async Read/Write)                      ▼ (Async Request)
-┌───────────────────────────────────────┐   ┌─────────────────────────────────────┐
-│      SHARED PHEROMONE SUBSTRATE       │   │      HETEROGENEOUS WORKER MESH      │
-│     (In-Memory NumPy / Redis)         │   │                                     │
-│  Tracks continuous trace matrix:      │   │  • CPU Mock Workers (Testing)       │
-│  • Success Trace (V)                  │   │  • Remote vLLM GPUs                 │
-│  • Latency Trace (L)                  │   │  • Ollama / llama.cpp Endpoints     │
-│  • Saturation Trace (S)               │   │  • Capability Tag System            │
-│  • Capability Fit Trace (C)           │   └─────────────────────────────────────┘
-└───────────────────▲───────────────────┘
-                    │
-┌───────────────────┴───────────────────┐
-│       EVAPORATION / DECAY ENGINE      │
-│   Asynchronously decays traces over   │
-│   time: Pt = Pt-1 * (1 - decay_rate)  │
-└───────────────────────────────────────┘
+                              ┌─────────────────────────────────────────┐
+                              │         EXTERNAL CLIENT REQUEST         │
+                              └────────────────────┬────────────────────┘
+                                                   │
+                                                   v
+                              ┌─────────────────────────────────────────┐
+                              │   HTTP Header: Authorization / Bearer   │
+                              └────────────────────┬────────────────────┘
+                                                   │
+                                                   v
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│ FASTAPI INGRESS GOVERNANCE MIDDLEWARE (Phase 11)                                       │
+│                                                                                        │
+│  1. AUTHENTICATION (api/auth.py)                                                       │
+│     ├── Extract SHA-256 API Key from Bearer Header                                     │
+│     └── Validate against Redis key-value lookup with static-map fallback               │
+│                                                                                        │
+│  2. DISTRIBUTED RATE LIMITING (api/rate_limiter.py)                                    │
+│     ├── Atomic Redis Lua Token Bucket (RPM: Requests Per Minute)                       │
+│     └── Token Quota Check (TPM: Tokens Per Minute)                                     │
+│                                                                                        │
+│  3. TENANT GOVERNANCE & CONTEXT (api/governance.py)                                   │
+│     ├── Inject TenantContext (Tenant ID, Tier: free/pro/enterprise)                   │
+│     └── Apply tier-specific matrix weight overrides to 4D Softmax Router               │
+└───────────────────────────────────────────┬────────────────────────────────────────────┘
+                                            │ (Pass Auth & Quota)
+                                            v
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│ STIGMERGIC 4D ROUTING ENGINE (Phases 1-10)                                             │
+│                                                                                        │
+│  1. PHEROMONE MATRIX EVALUATION (core/router_agent.py)                                 │
+│     ├── Compute Node Score: S_i = w_V * V_i - w_L * L_i + w_S * S_i - w_C * C_i        │
+│     └── Softmax Candidate Path Sampling: P(i) = exp(S_i / tau) / sum(exp(S_j / tau))   │
+│                                                                                        │
+│  2. DISPATCH & STREAMING ENGINE (api/streaming.py)                                     │
+│     └── Execute backend invocation (vLLM / Ollama / TensorRT-LLM / OpenRouter)          │
+│                                                                                        │
+│  3. FEEDBACK DECAY & REINFORCEMENT (core/memory_field.py)                              │
+│     └── Update V, L, S, C state variables based on runtime performance metrics         │
+└───────────────────────────────────────────┬────────────────────────────────────────────┘
+                                            │
+                      ┌─────────────────────┴─────────────────────┐
+                      │                                           │
+                      v                                           v
+┌──────────────────────────────────────────┐    ┌──────────────────────────────────────────┐
+│ PHEROMONE STATE CHECKPOINTING (Phase 12) │    │ GITOPS & OBSERVABILITY (Phase 13)        │
+│                                          │    │                                          │
+│ • Async background snapshot worker       │    │ • ArgoCD Application / ApplicationSet    │
+│ • State store: Redis AOF & local disk    │    │ • HPA / KEDA Autoscaling (2 -> 10 pods)  │
+│ • Warm-start boot state hydration        │    │ • Prometheus Metrics & Grafana Panels    │
+└──────────────────────────────────────────┘    └──────────────────────────────────────────┘
+```
+## Implementation Map (Phases 1-13)
+
+| Phase(s) | Module | Primary Capabilities |
+|----------|--------|----------------------|
+| 1-4 | `core/router_agent.py`, `core/memory_field.py` | Core 4D Pheromone Matrix engine (V, L, S, C), softmax candidate selection, dynamic feedback reinforcement, and decay algorithms. |
+| 5-7 | `api/server.py`, `api/streaming.py` | FastAPI core routes (`/v1/chat/completions`, `/v1/completions`, `/v1/models`), async SSE streaming engine, and worker registry. |
+| 8-10 | `core/worker_registry.py`, `api/metrics.py` | Worker health-check polling, fallback circuit breakers, and Prometheus metrics instrumentation. |
+| 11 | `api/auth.py`, `api/rate_limiter.py`, `api/governance.py` | SHA-256 API Key auth, atomic Redis Lua sliding-window rate limiting (RPM/TPM), and tier-based governance policy overrides (free, pro, enterprise). |
+| 12 | `core/checkpointing.py`, `cli/checkpoint_ctl.py` | Periodic matrix snapshotting to Redis/Disk, warm-start state hydration on router startup, and admin CLI management tool. |
+| 13 | `deploy/argocd/`, `deploy/helm/`, `scripts/e2e_chaos_hpa_validation.py` | ArgoCD GitOps manifests (Application & ApplicationSet), production Helm profile (`values-prod.yaml`), HPA/KEDA autoscaling, PodDisruptionBudget, and hermetic chaos validation suite. |
+
+## Mathematical Formulation (4D Stigmergic Routing)
+
+The routing engine models candidate LLM endpoints as nodes in a 4D stigmergic memory field. For each candidate node $i$, the engine evaluates four dimensional parameters:
+
+- **Velocity ($V_i$)**: Measured output token generation rate (tokens/sec).
+- **Latency ($L_i$)**: Time-to-First-Token (TTFT) in seconds.
+- **Stability ($S_i$)**: Exponential moving average of successful non-5xx response ratios.
+- **Cost ($C_i$)**: Normalized cost weight per 1M processed tokens.
+
+### Composite Score Computation
+
+Given a set of base matrix weights $w = (w_V, w_L, w_S, w_C)$ modified by the active tenant governance tier bias $\Delta w_{\text{tier}}$, the score $S_i$ for node $i$ is:
+
+$$S_{i} = (w_V + \Delta w_V) V_i - (w_L + \Delta w_L) L_i + (w_S + \Delta w_S) S_i - (w_C + \Delta w_C) C_i$$
+
+> **Weight mapping** in `config.yaml`: `weights.alpha = w_V` (success/velocity), `weights.beta = w_L` (latency), `weights.gamma = w_S` (saturation/stability), `weights.delta = w_C` (capability-fit/cost).
+
+### Boltzmann Softmax Selection
+
+Candidate nodes are sampled stochastically using a Boltzmann distribution governed by temperature parameter $\tau$:
+
+$$P(\text{Node}_i) = \frac{\exp\left(\frac{S_i}{\tau}\right)}{\sum_{j=1}^{N} \exp\left(\frac{S_j}{\tau}\right)}$$
+
+### Pheromone Decay & Reinforcement
+
+Traces continuously decay toward baseline over time $\Delta t$ at evaporation rate $\gamma$, reinforced by observed performance $R_{\text{obs}}$:
+
+$$\mathbf{M}_i(t + \Delta t) = (1 - \gamma)^{\Delta t} \mathbf{M}_i(t) + \gamma R_{\text{obs}}$$
+## Configuration & Feature Flags
+
+The router loads `config.yaml` at startup. The `security` and `checkpoints` sections are materialized at runtime and toggled via environment variables for 12-factor/container deployments.
+
+**config.yaml**
+
+```yaml
+storage_backend: 'in_memory'      # in_memory | redis
+decay_rate: 0.05
+decay_interval_sec: 0.5
+saturation_scale: 0.1
+decay_success: true
+decay_capability: true
+
+weights:
+  alpha: 1.0    # velocity (success) weight
+  beta: 2.0     # latency weight
+  gamma: 1.5    # saturation/stability weight
+  delta: 1.5    # capability-fit weight
+temperature: 0.5
+
+redis:
+  host: 'localhost'
+  port: 6379
+  db: 0
+  password: ''
+
+server:
+  host: '0.0.0.0'
+  port: 8000
+  workers:
+    - node_id: 'slm-fast'
+      type: 'mock'
+      base_delay_sec: 0.03
+      load_factor: 0.3
+      capability_tags: ['slm', 'fast', 'low-latency']
+    - node_id: 'llm-reasoner'
+      type: 'mock'
+      base_delay_sec: 0.15
+      load_factor: 0.5
+      capability_tags: ['llm', 'reasoning']
 ```
 
-## Core Features
+**Environment Variable Overrides**
 
-- **Zero Central Bottleneck**: No single dispatcher or centralized queue; router agents make independent probabilistic choices based on local observation of the shared memory state.
-- **Organic Failover & Self-Healing**: Crashed, slow, or thermal-throttled nodes accumulate elevated latency ($L$) and saturation ($S$) penalties. Traffic naturally flows away without waiting for external health probes.
-- **Capability-Aware Routing**: A fourth trace column (C, capability fit) biases routing toward nodes whose declared tags (e.g. `slm`, `reasoning`, `low-latency`) match the incoming prompt semantics. Short prompts route to lightweight SLMs; deep-reasoning prompts route to LLMs — all through the same pheromone feedback loop.
-- **Hardware-Agnostic Worker Mesh**: Standardized worker abstraction supporting simulated CPU nodes, local edge runtimes (Ollama, llama.cpp), and remote vLLM GPU clusters.
-- **OpenAI API Compatibility**: Native FastAPI ingress supporting `/v1/chat/completions`, `/v1/completions`, and `/v1/models`.
-- **Real-time Observability**: Built-in Rich terminal UI dashboard displaying real-time trace heatmaps, load distribution, and calculated attraction scores.
-- **Distributed Scale-Out**: Multiple router replicas (containers or processes) share a single pheromone substrate via Redis, enabling horizontal scaling. Atomic Lua-based trace deposits guarantee consistency under concurrent writes without locks.
+| Variable | Scope | Effect |
+|----------|-------|--------|
+| `STIGMERGIC_STORAGE_BACKEND` | memory field | `in_memory` or `redis` |
+| `STIGMERGIC_REDIS_HOST` | redis | Redis host override |
+| `STIGMERGIC_SECURITY_ENABLED` | ingress | Enable/disable Phase 11 auth & rate limiting |
+| `STIGMERGIC_DEFAULT_TENANT_KEYS` | auth | JSON array of tenant key descriptors |
+| `STIGMERGIC_CHECKPOINTS_ENABLED` | router | Enable/disable Phase 12 checkpointing |
+| `STIGMERGIC_CHECKPOINT_INTERVAL` | router | Snapshot interval (s) |
+| `STIGMERGIC_CHECKPOINT_STORAGE_PATH` | router | Local disk checkpoint directory |
 
-## Mathematical Foundations
+## Ingress Governance & Multi-Tenancy
 
-### 1. Node Attraction Score
+All requests pass through the Phase 11 FastAPI middleware before reaching the 4D routing engine. Bearer tokens are SHA-256 hashed and resolved to a `TenantContext`; an atomic Redis Lua token bucket enforces per-tenant RPM/TPM quotas, with tier-specific matrix weight overrides steering traffic toward the right backends.
 
-For a target node $i$, its raw attraction score is calculated from its active scalar traces in the shared substrate:
+**Tenant Tiers & Matrix Weight Overrides**
 
-$$
-\text{Score}_i = \frac{\alpha \cdot V_i + \delta \cdot C_i + \epsilon}{\beta \cdot L_i + \gamma \cdot S_i + \epsilon}
-$$
+| Tier | RPM Limit | TPM Limit | Weight Delta ($\Delta w$) | Behavior |
+|------|-----------|-----------|---------------------------|----------|
+| `free` | 60 | 10,000 | $w_C \times 2.0$, $w_S \times 0.5$ | Prioritizes cost-efficient backends; restricts burst concurrency. |
+| `pro` | 600 | 100,000 | Baseline $(1.0, 1.2, 2.0, 0.8)$ | Balanced 4D distribution across latency, stability, and speed. |
+| `enterprise` | 6,000 | 1,000,000 | $w_L \times 1.5$, $w_V \times 1.5$ | Minimizes TTFT and maximizes streaming throughput. |
+## Installation & Deployment
 
-Where:
+### 1. Local Development Setup
 
-- $V_i$: Success Trace (EWMA of binary success outcome, ∈ [0, 1]).
-- $L_i$: Latency Trace (EWMA of observed latency in seconds).
-- $S_i$: Saturation Trace (scaled residual active load).
-- $C_i$: Capability Fit Trace (EWMA of how well the node's tags matched routing requests, ∈ [0, 1]).
-- $\alpha, \beta, \gamma, \delta$: Operational sensitivity weights configured in `config.yaml`.
-- $\epsilon$: Stability constant ($10^{-5}$) preventing division by zero.
+```bash
+# Clone repository
+git clone https://github.com/aragit/stigmergic-mesh-router.git
+cd stigmergic-mesh-router
 
-### 2. Boltzmann Softmax Selection
+# Create virtual environment & install dependencies
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
 
-To maintain exploration of recovered nodes while favoring high-performing routes, node selection probabilities follow a Boltzmann distribution scaled by temperature $T$:
+# Run unit and integration test suite
+pytest -v
+```
 
-$$
-P(\text{Node}_i) = \frac{\exp(\text{Score}_i / T)}{\sum_{j=1}^{N} \exp(\text{Score}_j / T)}
-$$
+### 2. Docker Compose Quickstart
 
-### 3. Evaporation Dynamics (Decay Engine)
+```bash
+# Spin up Redis, Prometheus, Grafana, and 3 Router instances (mock workers)
+docker-compose up --build -d
 
-Traces continuously decay over time interval $\Delta t$ at evaporation rate $\delta \in (0, 1)$:
+# Check cluster status
+curl http://localhost:8000/v1/models
+```
 
-$$
-P_t(\text{trace}) = P_{t-\Delta t}(\text{trace}) \cdot (1 - \delta)^{\Delta t}
-$$
+### 3. Production Helm & GitOps Deployment
+
+```bash
+# Lint chart using production configuration
+helm lint deploy/helm/stigmergic-mesh-router \
+  -f deploy/helm/stigmergic-mesh-router/values-prod.yaml
+
+# Install chart
+helm install stigmergic-mesh-router deploy/helm/stigmergic-mesh-router \
+  --namespace stigmergic-mesh \
+  --create-namespace \
+  -f deploy/helm/stigmergic-mesh-router/values-prod.yaml
+```
+
+```bash
+# Apply ArgoCD Application manifest (automated sync, prune, self-heal)
+kubectl apply -f deploy/argocd/application.yaml -n argocd
+
+# (Optional) Apply Multi-Environment ApplicationSet
+kubectl apply -f deploy/argocd/applicationset.yaml -n argocd
+```
+
+## API Reference
+
+### Authentication Header
+
+All protected endpoints require a Bearer token whose SHA-256 hash matches a registered tenant key.
+
+```http
+Authorization: Bearer <YOUR_API_KEY>
+```
+
+### POST /v1/chat/completions
+
+Executes 4D path selection and forwards the request to the optimal model backend.
+
+**Request**
+
+```http
+POST /v1/chat/completions HTTP/1.1
+Host: router.stigmergic.internal
+Authorization: Bearer sk-tenant-pro-key-99812
+Content-Type: application/json
+
+{
+  "model": "auto",
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Explain stigmergic coordination in multi-agent networks."}
+  ],
+  "temperature": 0.7,
+  "stream": true
+}
+```
+
+**Response Headers (Rate Limit Context)**
+
+```http
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+X-RateLimit-Limit-RPM: 600
+X-RateLimit-Remaining-RPM: 599
+X-RateLimit-Reset-RPM: 42
+X-Tenant-Tier: pro
+X-Selected-Node: worker-vllm-us-east-03
+```
+
+### GET /v1/models
+
+Returns the list of active backend models registered in the memory field.
+
+**Request**
+
+```http
+GET /v1/models HTTP/1.1
+Authorization: Bearer sk-tenant-pro-key-99812
+```
+
+**Response Body**
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "auto",
+      "object": "model",
+      "created": 1723111200,
+      "owned_by": "stigmergic-router",
+      "permissions": {"tier": "pro", "routing_algorithm": "4d-softmax"}
+    },
+    {
+      "id": "llama-3-70b-instruct",
+      "object": "model",
+      "created": 1723111200,
+      "owned_by": "worker-vllm-us-east-03"
+    }
+  ]
+}
+```
+## Admin CLI Usage (cli/checkpoint_ctl.py)
+
+The `checkpoint_ctl.py` CLI provides state inspection, manual exports, and force-import for administrative maintenance.
+
+```bash
+# 1. Export current live matrix state from Redis to a JSON file
+python cli/checkpoint_ctl.py export  --output ./snapshots/manual_backup.json --redis-url redis://localhost:6379/0
+
+# 2. Inspect serialized state file properties
+python cli/checkpoint_ctl.py inspect  --input ./snapshots/manual_backup.json
+
+# 3. Force-import state snapshot into local Redis store
+python cli/checkpoint_ctl.py import  --input ./snapshots/manual_backup.json --redis-url redis://localhost:6379/0
+```
+
+## Verification & Chaos Validation
+
+### Running Full Test Suite
+
+```bash
+pytest -v
+```
+
+### Running E2E Chaos & HPA Validation Script
+
+The synthetic chaos runner validates cluster scaling, pod termination recovery, and rate-limit enforcement.
+
+```bash
+python scripts/e2e_chaos_hpa_validation.py \
+  --namespace stigmergic-mesh \
+  --target-host http://localhost:8000 \
+  --concurrent-tenants 10 \
+  --duration 120
+```
+
+The runner executes three phases:
+
+- **Phase A - High-Concurrency Load Injection:** Spikes concurrent tenant traffic to trigger HPA pod scaling (2 -> 10 replicas).
+- **Phase B - Fault Injection & Pod Resiliency:** Terminates active router pods mid-stream and verifies zero-downtime rollover with warm-start checkpoint hydration (hydration < 200ms).
+- **Phase C - Rate-Limit & Metric Assertion:** Confirms `429` responses under tenant quota breaches and verifies metric propagation to Prometheus (`stigmergic_checkpoint_restore_status == 1`).
+
+### Running Live Simulation
+
+```bash
+python run_simulation.py --requests 30
+```
 
 ## Repository Structure
 
 ```
 stigmergic-mesh-router/
-├── config.yaml                   # Decay rates, weight factors, temperature, cluster map
-├── requirements.txt              # Project dependencies
+├── config.yaml                 # Decay rates, weights, temperature, worker map
+├── docker-compose.yml          # API server + mock workers + observability
+├── prometheus.yml              # Prometheus scrape config
+├── run_simulation.py           # Quickstart 30-request mock execution loop
 ├── core/
-│   ├── __init__.py
-│   ├── memory_field.py           # Shared Pheromone Substrate (Async NumPy)
-│   ├── worker_node.py            # Hardware-agnostic abstraction (CPU Mock + GPU vLLM)
-│   ├── router_agent.py           # Stigmergic routing logic & trace updates
-│   └── decay_engine.py           # Background evaporation engine
+│   ├── memory_field.py        # Shared pheromone substrate (4D V/L/S/C)
+│   ├── router_agent.py        # Stigmergic routing + trace updates
+│   ├── worker_node.py         # Hardware-agnostic worker abstraction
+│   ├── worker_registry.py     # Worker registration & health polling
+│   ├── checkpointing.py       # Matrix snapshot / hydration (Phase 12)
+│   └── decay_engine.py        # Background evaporation engine
 ├── api/
 │   ├── __init__.py
-│   └── server.py                 # FastAPI ingress exposing OpenAI-compatible endpoints
-├── visualizer/
-│   ├── __init__.py
-│   └── terminal_dashboard.py     # Live Rich terminal heatmap of pheromone levels
-├── benchmarks/
-│   ├── __init__.py
-│   ├── failover_test.py          # Zero-touch chaos failover verification suite
-│   └── capability_routing_test.py # Capability-aware SLM/LLM routing benchmark
-├── tests/
-│   ├── __init__.py
-│   ├── test_memory_field.py      # PheromoneMemoryField unit tests
-│   └── test_router_agent.py      # StigmergicRouterAgent unit tests
-├── Dockerfile                    # Production Python 3.11 image
-├── docker-compose.yml            # API server + worker services
-└── run_simulation.py             # Quickstart 30-request mock execution loop
-```
-
-## Getting Started
-
-### 1. Installation
-
-Clone the repository and install dependencies:
-
-```bash
-git clone https://github.com/aragit/stigmergic-mesh-router.git
-cd stigmergic-mesh-router
-pip install -r requirements.txt
-```
-
-### 2. Quickstart Simulation
-
-Run the built-in CPU mock simulation to verify stigmergic load distribution across fast and slow nodes:
-
-```bash
-python3 run_simulation.py
-```
-
-### 3. Run Chaos Failover Benchmark
-
-Execute the chaos test suite to observe zero-touch failover and trace-evaporation recovery:
-
-```bash
-python3 benchmarks/failover_test.py
-```
-
-### 4. Launch Ingress API Server
-
-Start the OpenAI-compatible FastAPI gateway:
-
-```bash
-uvicorn api.server:app --host 0.0.0.0 --port 8000 --reload
-```
-
-Test an inference query via curl:
-
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "default",
-    "messages": [{"role": "user", "content": "Hello world!"}]
-  }'
-```
-
-## Empirical Benchmark Results
-
-The Chaos Failover Benchmark (`benchmarks/failover_test.py`) runs a 45-tick simulation across three phases with two crash conditions injected into `node_alpha`:
-
-### Configuration
-
-| Parameter | Value |
-|---|---|
-| Nodes | 3 (alpha, beta, gamma) — all `base_delay=0.05s`, `load_factor=0.5` |
-| Requests per phase | 75 (15 ticks × 5 requests) |
-| Temperature (T) | 2.0 |
-| Decay rate | 0.20 per 0.5s interval |
-| Crash | 2.0s fixed delay, `load_factor=0.0` (no compounding) |
-| V decay | Disabled (`decay_success=False`) — success trace persists through failure |
-
-### Phase A — Normal Operation
-
-All nodes start at the same baseline speed (0.075s per request). With steady-state initialization (V=1.0, L=0.075), the Boltzmann softmax produces a uniform distribution:
-
-| Node | Requests | Share |
-|---|---|---|
-| Alpha | 25 | 33.3% |
-| Beta | 22 | 29.3% |
-| Gamma | 26 | 34.7% |
-
-### Phase B — Node Alpha Crash
-
-Alpha suffers a 2.0s processing delay. Its latency trace (L) jumps to ~1.5s, collapsing its attraction score. Traffic immediately abandons alpha without any health-check or external probe:
-
-| Node | Requests | Share |
-|---|---|---|
-| Alpha | 3 | 4.0% |
-| Beta | 38 | 50.7% |
-| Gamma | 31 | 41.3% |
-
-**The 4.0% residual traffic to alpha represents the 3 crash requests that executed before L fully registered.**
-
-### Phase C — Recovery
-
-Alpha is restored to its healthy 0.05s baseline. Over 75 requests, latency observations from the crash evaporate (decayed from 1.5→0.07 over ~14 decay cycles). As L fades below the beta/gamma equilibrium, alpha's attraction score rises and traffic returns dynamically:
-
-| Node | Requests | Share |
-|---|---|---|
-| Alpha | 15 | 18.7% |
-| Beta | 27 | 36.0% |
-| Gamma | 34 | 46.7% |
-
-Final pheromone state at end of Phase C:
-
-| Node | V (Success) | L (Latency) | S (Saturation) |
-|---|---|---|---|
-| Alpha | 1.0000 | 0.0508 | 0.0000 |
-| Beta | 1.0000 | 0.0490 | 0.0000 |
-| Gamma | 1.0000 | 0.0539 | 0.0000 |
-
-Alpha recovered from 4.0% → 18.7% traffic share, demonstrating that stigmergic trace evaporation enables zero-touch self-healing without centralized coordination.
-
-### Phase C (Updated) — Enhanced Recovery with Capability Fit
-
-With the extended 4D matrix (including C), the failover benchmark shows improved recovery:
-
-| Phase | Alpha | Beta | Gamma |
-|---|---|---|---|
-| A (normal) | 34.7% | 33.3% | 32.0% |
-| B (crash) | 2.7% | 53.3% | 44.0% |
-| C (recovery) | 29.3% | 32.0% | 38.7% |
-
-The capability-fit trace (C=0.5 neutral at baseline) provides additional routing signal that accelerates recovery of the crashed node.
-
-### Verdict
-
-```
-✓ PASS: node_alpha was abandoned during the crash (Phase B: 2 reqs, 2.7%)
-  and traffic returned after recovery (Phase C: 22 reqs, 29.3%).
-```
-
-## Capability-Aware Routing Benchmark
-
-The Capability Routing Benchmark (`benchmarks/capability_routing_test.py`) demonstrates that the fourth trace column (C) enables semantic prompt routing — short prompts naturally flow to lightweight SLM nodes while deep-reasoning prompts flow to LLM nodes, all through the same pheromone feedback loop.
-
-### Configuration
-
-| Parameter | Value |
-|---|---|
-| Nodes | 3 (slm-fast 0.03s, llm-reasoner 0.15s, llm-balanced 0.08s) |
-| Capability Tags | `slm-fast`: [slm, fast, low-latency] · `llm-reasoner`: [llm, reasoning] · `llm-balanced`: [llm, balanced] |
-| Requests | 60 short + 60 reasoning prompts |
-| Temperature | 2.0 |
-| Decay rate | 0.15 |
-| Delta (capability weight) | 1.5 |
-
-### Phase A — Short Prompts (SLM Routing)
-
-All 60 short prompts ("Hello!", "What time is it?", etc.) routed to the lightweight `slm-fast` node because `analyze_prompt()` emits `{"slm": 1.5, "fast": 1.3, "low-latency": 1.2}`, and the capability-match boost makes `slm-fast`'s score dominate:
-
-| Node | Requests | Share | Avg Latency |
-|---|---|---|---|
-| slm-fast | 60 | 100.0% | 0.0390s |
-| llm-reasoner | 0 | 0.0% | — |
-| llm-balanced | 0 | 0.0% | — |
-
-### Phase B — Deep Reasoning Prompts (LLM Routing)
-
-All 60 reasoning prompts ("Let's think step by step...", "Explain the chain of thought...") routed to `llm-reasoner` because `analyze_prompt()` detects thinking patterns and emits `{"llm": 1.5, "reasoning": 1.5}`, boosting the LLM node's score:
-
-| Node | Requests | Share | Avg Latency |
-|---|---|---|---|
-| llm-reasoner | 41 | 68.3% | 0.2250s |
-| llm-balanced | 18 | 30.0% | 0.1120s |
-| slm-fast | 1 | 1.7% | 0.0390s |
-
-### Verdict
-
-```
-✓ PASS: Short prompts routed to SLM (100.0% to slm-fast) and reasoning
-  prompts routed to LLM (68.3% to llm-reasoner).
-```
-
-## Running Tests
-
-Unit tests cover memory field initialization, trace deposition, evaporation dynamics, concurrency safety, score computation (3D and 4D), Boltzmann softmax, capability matching, sampling bias, and trace feedback:
-
-```bash
-pip install -r requirements.txt
-pytest tests/ -v
-```
-
-**77 tests** across three modules:
-- `tests/test_memory_field.py` — 29 tests (initialization, deposition, evaporation, concurrency)
-- `tests/test_redis_memory_field.py` — 8 tests (Redis atomic deposits, evaporation flags, concurrent no-lost-writes, fakeredis backend)
-- `tests/test_router_agent.py` — 40 tests (3D/4D scores, softmax, capability matching, routing feedback, sampling bias)
-
-## Docker
-
-Build and run the production API server:
-
-```bash
-docker-compose up --build
-```
-
-Or build the image standalone:
-
-```bash
-docker build -t stigmergic-mesh-router .
-docker run -p 8000:8000 stigmergic-mesh-router
-```
-
-## Redis Scale-Out
-
-The `RedisPheromoneMemoryField` enables multi-replica router deployments: each router instance (container/process) shares the same Redis-backed pheromone matrix, ensuring consistent, atomic trace updates via Lua scripts. Configure via `config.yaml`:
-
-```yaml
-storage_backend: "redis"
-decay_rate: 0.05
-decay_interval_sec: 0.5
-redis:
-  host: "redis"
-  port: 6379
-  db: 0
-```
-
-Docker Compose spins up 2 router replicas and a Redis instance:
-
-```bash
-docker-compose up --build
-# router-1 on :8000, router-2 on :8001
-```
-
-Run the scale-out benchmark (uses `fakeredis`, no live Redis needed):
-
-```bash
-python3 benchmarks/redis_scaleout_test.py
+│   ├── server.py              # FastAPI ingress (OpenAI-compatible endpoints)
+│   ├── auth.py                # SHA-256 API key auth (Phase 11)
+│   ├── rate_limiter.py        # Redis Lua token bucket (Phase 11)
+│   ├── governance.py          # Tenant context + weight overrides (Phase 11)
+│   ├── streaming.py           # Async SSE dispatch engine
+│   └── metrics.py             # Prometheus instrumentation
+├── cli/checkpoint_ctl.py      # Checkpoint admin CLI (Phase 12)
+├── deploy/argocd/             # GitOps Application + ApplicationSet (Phase 13)
+├── deploy/helm/stigmergic-mesh-router/   # Helm chart + values-prod (Phase 13)
+├── scripts/                   # k3d, helm/HPA validation, E2E chaos runner
+├── tests/                     # Unit + E2E chaos test suite
+└── benchmarks/                # Failover & capability-routing benchmarks
 ```
