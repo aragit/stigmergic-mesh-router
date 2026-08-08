@@ -32,75 +32,15 @@ Rather than relying on rigid, top‑down load-balancing rules, the mesh achieves
 
 ## 📐 Conceptual Swarm Stigmergy Loop
 
-```text
-               ┌────────────────────────────────────────────────────────┐
-               │        ENVIRONMENTAL SUBSTRATE (MEMORY FIELD)          │
-               │   Shared 4D Pheromone Matrix: M_i = (V_i, L_i, S_i, C_i)  │
-               └───────────────▲────────────────────────┬───────────────┘
-                               │                        │
-                    Pheromone Reinforcement     Environmental Sensing
-                   (Post-Execution Telemetry)    (Softmax Path Sampling)
-                               │                        │
-              ┌────────────────┴────────────────────────▼────────────────┐
-              │                   SWARM AGENT MESH                       │
-              │  • Router Agents: Sample candidate paths via Softmax     │
-              │  • Worker Agents: Process requests & stream responses   │
-              │  • Evaporation Worker: Continuous decay ($\\gamma$) of state │
-              └──────────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="assets/dig1.png" alt="Conceptual Swarm Stigmergy Loop diagram" width="800" />
+</p>
 
 ## 🏗️ Complete End-to-End Architecture
 
-```
-                               ┌─────────────────────────────────────────┐
-                               │         EXTERNAL CLIENT REQUEST         │
-                               └────────────────────┬────────────────────┘
-                                                    │
-                                                    v
-                               ┌─────────────────────────────────────────┐
-                               │   HTTP Header: Authorization / Bearer   │
-                               └────────────────────┬────────────────────┘
-                                                    │
-                                                    v
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│ INGRESS GOVERNANCE & MULTI-TENANCY (Phase 11)                                          │
-│                                                                                        │
-│  1. AUTHENTICATION (`api/auth.py`)                                                     │
-│     └── SHA-256 API Key verification (Redis lookup with static-map fallback)          │
-│                                                                                        │
-│  2. DISTRIBUTED RATE LIMITING (`api/rate_limiter.py`)                                  │
-│     └── Atomic Redis Lua Token Bucket (RPM & TPM enforcement)                          │
-│                                                                                        │
-│  3. TENANT GOVERNANCE & CONTEXT (`api/governance.py`)                                  │
-│     └── Inject `TenantContext` & apply tier matrix weight adjustments ($\\Delta w$)      │
-└───────────────────────────────────────────┬────────────────────────────────────────────┘
-                                            │ (Authenticated & Quota Approved)
-                                            v
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│ STIGMERGIC MULTI-AGENT SWARM MESH (Phases 1–10)                                        │
-│                                                                                        │
-│  1. ROUTER AGENTS (`core/router_agent.py`)                                             │
-│     ├── Inspect 4D Pheromone Field: S_i = w_V*V_i - w_L*L_i + w_S*S_i - w_C*C_i         │
-│     └── Sample Path via Boltzmann/Softmax: P(i) = exp(S_i / \\tau) / \\sum exp(S_j / \\tau) │
-│                                                                                        │
-│  2. WORKER AGENTS & STREAMING (`api/streaming.py`)                                     │
-│     └── Dispatch request to target inference backend (vLLM, Ollama, TensorRT-LLM)     │
-│                                                                                        │
-│  3. ENVIRONMENTAL REINFORCEMENT & DECAY (`core/memory_field.py`)                      │
-│     ├── Post-execution pheromone deposit: M_i(t+\\Delta t) = (1-\\gamma)M_i(t) + \\gamma R │
-│     └── Continuous evaporation worker prevents stale path lock-in                       │
-└───────────────────────────┬───────────────────────────────────────────┬────────────────┘
-                            │                                           │
-                            v                                           v
-┌──────────────────────────────────────────┐    ┌──────────────────────────────────────────┐
-│ STATE CHECKPOINTING & HYDRATION          │    │ GITOPS & CLUSTER HARDENING               │
-│ (Phase 12)                               │    │ (Phase 13)                               │
-│                                          │    │                                          │
-│ • Async Redis AOF & Disk Snapshots       │    │ • ArgoCD Application & ApplicationSet    │
-│ • Boot-time Warm-Start Hydration         │    │ • HPA Autoscaling (2 → 10 Replicas)      │
-│ • Admin CLI (`cli/checkpoint_ctl.py`)    │    │ • E2E Chaos & Load Validation Suite      │
-└──────────────────────────────────────────┘    └──────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="assets/dig2.png" alt="Complete End-to-End Architecture diagram" width="800" />
+</p>
 
 ## Implementation Map (Phases 1-13)
 
