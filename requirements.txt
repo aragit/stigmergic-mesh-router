@@ -5,8 +5,7 @@ pydantic
 fastapi
 uvicorn
 rich
-redis
-redis[hiredis]
+redis[hiredis]==5.3.1
 pytest
 pytest-asyncio
 fakeredis
