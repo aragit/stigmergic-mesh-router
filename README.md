@@ -1,62 +1,96 @@
 # Stigmergic Mesh Router
 
-An enterprise-grade, neuro-symbolic **4D pheromone-based dynamic LLM routing engine**. The stigmergic-mesh-router dynamically evaluates model backends across Velocity ($V$), Latency ($L$), Stability ($S$), and Cost ($C$), executing real-time softmax candidate path selection with adaptive feedback decay, multi-tenant ingress governance, persistent state checkpointing, and GitOps orchestration.
+> **An Enterprise-Grade, Multi-Agent Swarm Architecture for Self-Organizing LLM Inference Routing**
 
-## Architectural Overview
+The `stigmergic-mesh-router` implements **Digital Stigmergy** — a bio-inspired mechanism of indirect coordination where autonomous router and worker agents communicate by depositing $4\\text{D}$ pheromone signals into a shared environmental memory field.
+
+Rather than relying on rigid, top‑down load-balancing rules, the mesh achieves **emergent, dynamic traffic optimization** across Velocity ($V$), Latency ($L$), Stability ($S$), and Cost ($C$), incorporating real-time feedback decay, multi-tenant ingress governance, persistent state checkpointing, and GitOps orchestration.
+
+---
+
+## 🐝 Swarm Architecture vs. Traditional Routing
+
+| Dimension | Traditional LLM Load Balancer | Stigmergic Mesh Router (Swarm) |
+| :--- | :--- | :--- |
+| **Control Paradigm** | Centralized, top-down rule engine / Round-Robin | Decentralized, emergent multi-agent self-organization |
+| **Agent Coordination** | Direct RPC / synchronous health checks | Indirect stigmergic signaling via shared $4\\text{D}$ Memory Field |
+| **Adaptability** | Hardcoded failovers & static weight matrices | Real-time pheromone reinforcement & continuous decay ($\\gamma$) |
+| **State Dynamics** | Stateless or rigid session persistence | Dynamic environmental memory with warm-start boot hydration |
+
+---
+
+## 📐 Conceptual Swarm Stigmergy Loop
+
+```text
+               ┌────────────────────────────────────────────────────────┐
+               │        ENVIRONMENTAL SUBSTRATE (MEMORY FIELD)          │
+               │   Shared 4D Pheromone Matrix: M_i = (V_i, L_i, S_i, C_i)  │
+               └───────────────▲────────────────────────┬───────────────┘
+                               │                        │
+                    Pheromone Reinforcement     Environmental Sensing
+                   (Post-Execution Telemetry)    (Softmax Path Sampling)
+                               │                        │
+              ┌────────────────┴────────────────────────▼────────────────┐
+              │                   SWARM AGENT MESH                       │
+              │  • Router Agents: Sample candidate paths via Softmax     │
+              │  • Worker Agents: Process requests & stream responses   │
+              │  • Evaporation Worker: Continuous decay ($\\gamma$) of state │
+              └──────────────────────────────────────────────────────────┘
+```
+
+## 🏗️ Complete End-to-End Architecture
 
 ```
-                              ┌─────────────────────────────────────────┐
-                              │         EXTERNAL CLIENT REQUEST         │
-                              └────────────────────┬────────────────────┘
-                                                   │
-                                                   v
-                              ┌─────────────────────────────────────────┐
-                              │   HTTP Header: Authorization / Bearer   │
-                              └────────────────────┬────────────────────┘
-                                                   │
-                                                   v
+                               ┌─────────────────────────────────────────┐
+                               │         EXTERNAL CLIENT REQUEST         │
+                               └────────────────────┬────────────────────┘
+                                                    │
+                                                    v
+                               ┌─────────────────────────────────────────┐
+                               │   HTTP Header: Authorization / Bearer   │
+                               └────────────────────┬────────────────────┘
+                                                    │
+                                                    v
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│ FASTAPI INGRESS GOVERNANCE MIDDLEWARE (Phase 11)                                       │
+│ INGRESS GOVERNANCE & MULTI-TENANCY (Phase 11)                                          │
 │                                                                                        │
-│  1. AUTHENTICATION (api/auth.py)                                                       │
-│     ├── Extract SHA-256 API Key from Bearer Header                                     │
-│     └── Validate against Redis key-value lookup with static-map fallback               │
+│  1. AUTHENTICATION (`api/auth.py`)                                                     │
+│     └── SHA-256 API Key verification (Redis lookup with static-map fallback)          │
 │                                                                                        │
-│  2. DISTRIBUTED RATE LIMITING (api/rate_limiter.py)                                    │
-│     ├── Atomic Redis Lua Token Bucket (RPM: Requests Per Minute)                       │
-│     └── Token Quota Check (TPM: Tokens Per Minute)                                     │
+│  2. DISTRIBUTED RATE LIMITING (`api/rate_limiter.py`)                                  │
+│     └── Atomic Redis Lua Token Bucket (RPM & TPM enforcement)                          │
 │                                                                                        │
-│  3. TENANT GOVERNANCE & CONTEXT (api/governance.py)                                   │
-│     ├── Inject TenantContext (Tenant ID, Tier: free/pro/enterprise)                   │
-│     └── Apply tier-specific matrix weight overrides to 4D Softmax Router               │
+│  3. TENANT GOVERNANCE & CONTEXT (`api/governance.py`)                                  │
+│     └── Inject `TenantContext` & apply tier matrix weight adjustments ($\\Delta w$)      │
 └───────────────────────────────────────────┬────────────────────────────────────────────┘
-                                            │ (Pass Auth & Quota)
+                                            │ (Authenticated & Quota Approved)
                                             v
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│ STIGMERGIC 4D ROUTING ENGINE (Phases 1-10)                                             │
+│ STIGMERGIC MULTI-AGENT SWARM MESH (Phases 1–10)                                        │
 │                                                                                        │
-│  1. PHEROMONE MATRIX EVALUATION (core/router_agent.py)                                 │
-│     ├── Compute Node Score: S_i = w_V * V_i - w_L * L_i + w_S * S_i - w_C * C_i        │
-│     └── Softmax Candidate Path Sampling: P(i) = exp(S_i / tau) / sum(exp(S_j / tau))   │
+│  1. ROUTER AGENTS (`core/router_agent.py`)                                             │
+│     ├── Inspect 4D Pheromone Field: S_i = w_V*V_i - w_L*L_i + w_S*S_i - w_C*C_i         │
+│     └── Sample Path via Boltzmann/Softmax: P(i) = exp(S_i / \\tau) / \\sum exp(S_j / \\tau) │
 │                                                                                        │
-│  2. DISPATCH & STREAMING ENGINE (api/streaming.py)                                     │
-│     └── Execute backend invocation (vLLM / Ollama / TensorRT-LLM / OpenRouter)          │
+│  2. WORKER AGENTS & STREAMING (`api/streaming.py`)                                     │
+│     └── Dispatch request to target inference backend (vLLM, Ollama, TensorRT-LLM)     │
 │                                                                                        │
-│  3. FEEDBACK DECAY & REINFORCEMENT (core/memory_field.py)                              │
-│     └── Update V, L, S, C state variables based on runtime performance metrics         │
-└───────────────────────────────────────────┬────────────────────────────────────────────┘
-                                            │
-                      ┌─────────────────────┴─────────────────────┐
-                      │                                           │
-                      v                                           v
+│  3. ENVIRONMENTAL REINFORCEMENT & DECAY (`core/memory_field.py`)                      │
+│     ├── Post-execution pheromone deposit: M_i(t+\\Delta t) = (1-\\gamma)M_i(t) + \\gamma R │
+│     └── Continuous evaporation worker prevents stale path lock-in                       │
+└───────────────────────────┬───────────────────────────────────────────┬────────────────┘
+                            │                                           │
+                            v                                           v
 ┌──────────────────────────────────────────┐    ┌──────────────────────────────────────────┐
-│ PHEROMONE STATE CHECKPOINTING (Phase 12) │    │ GITOPS & OBSERVABILITY (Phase 13)        │
+│ STATE CHECKPOINTING & HYDRATION          │    │ GITOPS & CLUSTER HARDENING               │
+│ (Phase 12)                               │    │ (Phase 13)                               │
 │                                          │    │                                          │
-│ • Async background snapshot worker       │    │ • ArgoCD Application / ApplicationSet    │
-│ • State store: Redis AOF & local disk    │    │ • HPA / KEDA Autoscaling (2 -> 10 pods)  │
-│ • Warm-start boot state hydration        │    │ • Prometheus Metrics & Grafana Panels    │
+│ • Async Redis AOF & Disk Snapshots       │    │ • ArgoCD Application & ApplicationSet    │
+│ • Boot-time Warm-Start Hydration         │    │ • HPA Autoscaling (2 → 10 Replicas)      │
+│ • Admin CLI (`cli/checkpoint_ctl.py`)    │    │ • E2E Chaos & Load Validation Suite      │
 └──────────────────────────────────────────┘    └──────────────────────────────────────────┘
 ```
+
 ## Implementation Map (Phases 1-13)
 
 | Phase(s) | Module | Primary Capabilities |
