@@ -1,6 +1,17 @@
-# Stigmergic Mesh Router
+<h1 align="center">Stigmergic Mesh Router</h1>
 
-> **An Enterprise-Grade, Multi-Agent Swarm Architecture for Self-Organizing LLM Inference Routing**
+<p align="center"><strong>An Enterprise-Grade, Multi-Agent Swarm Architecture for Self-Organizing LLM Inference Routing</strong></p>
+
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white" />
+  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-009485?logo=fastapi&logoColor=white" />
+  <img alt="Redis" src="https://img.shields.io/badge/Redis-DC3A2D?logo=redis&logoColor=white" />
+  <img alt="Kubernetes" src="https://img.shields.io/badge/Kubernetes-326CE5?logo=kubernetes&logoColor=white" />
+  <img alt="Helm" src="https://img.shields.io/badge/Helm-0065A3?logo=helm&logoColor=white" />
+  <img alt="KEDA" src="https://img.shields.io/badge/KEDA-231F20?logo=keda&logoColor=white" />
+  <img alt="Prometheus" src="https://img.shields.io/badge/Prometheus-F7B135?logo=prometheus&logoColor=white" />
+  <img alt="Grafana" src="https://img.shields.io/badge/Grafana-F46842?logo=grafana&logoColor=white" />
+</p>
 
 The `stigmergic-mesh-router` implements **Digital Stigmergy** — a bio-inspired mechanism of indirect coordination where autonomous router and worker agents communicate by depositing $4\\text{D}$ pheromone signals into a shared environmental memory field.
 
