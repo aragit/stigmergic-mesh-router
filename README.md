@@ -32,11 +32,15 @@ Rather than relying on rigid, top‑down load-balancing rules, the mesh achieves
 
 ## 📐 Conceptual Swarm Stigmergy Loop
 
+The loop shows how router agents sample routes from the shared 4D pheromone field, workers reinforce chosen paths with post-execution telemetry, and an evaporation worker decays stale signals — self-organizing traffic without central coordination.
+
 <p align="center">
   <img src="assets/dig1.png" alt="Conceptual Swarm Stigmergy Loop diagram" width="800" />
 </p>
 
 ## 🏗️ Complete End-to-End Architecture
+
+The pipeline runs an external request through Phase 11 ingress governance (auth, Redis Lua rate limiting, tenant context) into the Phase 1–10 multi-agent swarm mesh, followed by Phase 12 state checkpointing/warm-start and Phase 13 GitOps and cluster hardening.
 
 <p align="center">
   <img src="assets/dig2.png" alt="Complete End-to-End Architecture diagram" width="480" />
