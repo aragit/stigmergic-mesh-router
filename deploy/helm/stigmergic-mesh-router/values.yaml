@@ -59,6 +59,25 @@ prometheusAdapter:
   enabled: true
   prometheusUrl: "http://prometheus-k8s.monitoring.svc.cluster.local:9090"
 
+# KEDA ScaledObject: opt-in alternative autoscaler (disabled by default).
+# The standard v2 HPA (see `autoscaling`) is the primary autoscaler; enabling
+# KEDA swaps the custom-metrics backend via this chart's scaledobject.yaml.
+keda:
+  enabled: false
+
+# Optional: PodDisruptionBudget (disabled by default).
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+# Optional: state checkpointing / warm-start (Phase 12). Disabled by default;
+# values-prod.yaml enables it against a shared Redis URL with a local emptyDir.
+checkpoints:
+  enabled: false
+  interval: 30
+  storagePath: "/var/lib/stigmergic/checkpoints"
+  redisUrl: ""
+
 serviceMonitor:
   enabled: true
   namespace: "monitoring"
