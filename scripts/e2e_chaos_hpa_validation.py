@@ -11,6 +11,7 @@ inject_pod_chaos accept a k8s_client so the unit tests stay hermetic.
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import os
 import time
@@ -271,21 +272,33 @@ async def run_phases(
     tenant_api_key: str = "",
     kubeconfig: Optional[str] = None,
     k8s_client: Optional[Any] = None,
+    concurrent_tenants: int = 10,
+    duration_seconds: float = 5.0,
 ) -> None:
-    """Execute Phase A (load) + Phase B (chaos) + Phase C (governance)."""
+    """Execute Phase A (load) + Phase B (chaos) + Phase C (governance).
+
+    Phase A fans out *concurrent_tenants* independent traffic bursts so the
+    aggregate load is realistic for multi-tenant autoscaling.
+    """
     print(f"==> Phase A: injecting high-concurrency traffic to {base_url}")
     async with httpx.AsyncClient(base_url=base_url) as client:
-        stats = await simulate_tenant_traffic(
-            client=client,
-            tenant_id="tenant-prod",
-            api_key=tenant_api_key,
-            rps=50.0,
-            duration_seconds=5.0,
-        )
-        print(
-            f"   issued={stats.issued} ok={stats.succeeded} "
-            f"429={stats.rate_limited} err={stats.errors}"
-        )
+
+        async def _tenant(idx: int) -> TrafficStats:
+            stats = await simulate_tenant_traffic(
+                client=client,
+                tenant_id=f"tenant-{idx}",
+                api_key=tenant_api_key,
+                rps=50.0,
+                duration_seconds=duration_seconds,
+            )
+            print(
+                f"   [tenant-{idx}] issued={stats.issued} "
+                f"ok={stats.succeeded} 429={stats.rate_limited} "
+                f"err={stats.errors}"
+            )
+            return stats
+
+        await asyncio.gather(*[_tenant(i) for i in range(concurrent_tenants)])
 
     scaling = verify_hpa_scaling(
         namespace=namespace, kubeconfig=kubeconfig, k8s_client=k8s_client
@@ -315,9 +328,58 @@ async def run_phases(
     print(f"   rate-limited responses: {throttled} (warm-start verified)")
 
 
-def main() -> None:
-    """CLI entry point."""
-    asyncio.run(run_phases())
+def main(argv: Optional[List[str]] = None) -> None:
+    """CLI entry point.
+
+    Usage:
+      python scripts/e2e_chaos_hpa_validation.py \
+        --namespace stigmergic-mesh \
+        --target-host http://localhost:8000 \
+        --concurrent-tenants 10 \
+        --duration 120
+    """
+    parser = argparse.ArgumentParser(
+        prog="e2e_chaos_hpa_validation",
+        description=(
+            "Phase 13 E2E: load injection, HPA scaling check, pod chaos, "
+            "rate-limit and warm-start assertions."
+        ),
+    )
+    parser.add_argument(
+        "--target-host", default=DEFAULT_BASE_URL, help="Router base URL."
+    )
+    parser.add_argument(
+        "--namespace", default=DEFAULT_NAMESPACE, help="K8s namespace."
+    )
+    parser.add_argument(
+        "--tenant-api-key", default="", help="Bearer token for tenant auth."
+    )
+    parser.add_argument(
+        "--concurrent-tenants",
+        type=int,
+        default=10,
+        help="Number of concurrent tenant traffic bursts (Phase A).",
+    )
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=5.0,
+        help="Per-tenant burst duration in seconds (Phase A).",
+    )
+    parser.add_argument(
+        "--kubeconfig", default=None, help="Path to kubeconfig file."
+    )
+    args = parser.parse_args(argv)
+    asyncio.run(
+        run_phases(
+            base_url=args.target_host,
+            namespace=args.namespace,
+            tenant_api_key=args.tenant_api_key,
+            kubeconfig=args.kubeconfig,
+            concurrent_tenants=args.concurrent_tenants,
+            duration_seconds=args.duration,
+        )
+    )
 
 
 if __name__ == "__main__":
